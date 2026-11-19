@@ -7,6 +7,8 @@ export interface UserProfile {
   displayName: string;
   role: UserRole;
   active: boolean;
+  isOnline?: boolean;
+  lastSeenAt?: unknown;
   createdAt?: unknown;
   updatedAt?: unknown;
 }
@@ -25,6 +27,8 @@ export interface Client {
   updatedAt?: unknown;
 }
 
+export type CreditInterestMode = 'prorated_daily' | 'pre_added';
+
 export interface Credit {
   id: string;
   clientId: string;
@@ -35,6 +39,8 @@ export interface Credit {
   initialTotal: number;
   currentBalance: number;
   status: 'active' | 'settled';
+  interestMode?: CreditInterestMode;
+  lastPaymentAt?: unknown;
   orgId: 'akrobit';
   createdBy: string;
   createdByName: string;
@@ -91,6 +97,10 @@ export interface PortalCreditItem {
   interestRate: number;
   currentBalance: number;
   dateLabel: string;
+  lastActivityMs?: number;
+  interestMode?: CreditInterestMode;
+  projected30DayInterest?: number;
+  projected30DayTotal?: number;
 }
 
 export interface PortalTransactionItem {
@@ -123,6 +133,8 @@ export interface ConsolidatedCreditItem {
   interestRate: number;
   currentBalance: number;
   dateLabel: string;
+  daysElapsed?: number;
+  accruedInterest?: number;
 }
 
 export interface InvoicePayload {
@@ -136,6 +148,12 @@ export interface InvoicePayload {
   remainingBeforeInterest?: number;
   interestAdded?: number;
   newBalance: number;
+  daysElapsed?: number;
+  accruedInterest?: number;
+  totalDueToday?: number;
+  projected30DayInterest?: number;
+  projected30DayTotal?: number;
+  interestMode?: CreditInterestMode;
   creditLabel?: string;
   consolidatedItems?: ConsolidatedCreditItem[];
   totalNio?: number;

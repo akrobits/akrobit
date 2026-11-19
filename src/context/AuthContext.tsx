@@ -11,7 +11,7 @@ import {
   updateProfile,
   type User,
 } from 'firebase/auth';
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import {
   ADMIN_BOOTSTRAP_EMAIL,
   OperationType,
@@ -211,6 +211,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = async () => {
+    const current = auth.currentUser;
+    if (current && current.emailVerified) {
+      try {
+        await Promise.race([
+          updateDoc(doc(db, 'users', current.uid), {
+            isOnline: false,
+            lastSeenAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }),
+          new Promise<void>((resolve) => setTimeout(resolve, 600)),
+        ]);
+      } catch {
+        // Ignore offline/permission errors when logging out
+      }
+    }
     await signOut(auth);
   };
 

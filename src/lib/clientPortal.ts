@@ -10,7 +10,7 @@ import {
   type WriteBatch,
 } from 'firebase/firestore';
 import { ORG_ID, db } from './firebase';
-import { cleanPhoneInput, round2 } from './finance';
+import { calculateLiveCreditStatus, cleanPhoneInput, round2 } from './finance';
 import type {
   Client,
   ClientPortalSnapshot,
@@ -159,17 +159,21 @@ export function buildClientPortalPayload(
   let totalNio = 0;
   let totalUsd = 0;
   const activeCredits: PortalCreditItem[] = activeSorted.map((c, idx) => {
-    const safeBalance = round2(Math.max(0, c.currentBalance));
-    if (c.currency === 'NIO') totalNio = round2(totalNio + safeBalance);
-    else totalUsd = round2(totalUsd + safeBalance);
+    const live = calculateLiveCreditStatus(c, transactions);
+    if (c.currency === 'NIO') totalNio = round2(totalNio + live.totalDueToday);
+    else totalUsd = round2(totalUsd + live.totalDueToday);
 
     return {
       label: `Credit Cash N°${idx + 1}`.slice(0, 60),
       currency: c.currency,
       principal: round2(c.principal),
       interestRate: c.interestRate,
-      currentBalance: safeBalance,
+      currentBalance: live.baseBalance,
       dateLabel: formatPortalDateTime(c.createdAt),
+      lastActivityMs: live.lastActivityMs,
+      interestMode: c.interestMode || 'pre_added',
+      projected30DayInterest: live.projected30DayInterest,
+      projected30DayTotal: live.projected30DayTotal,
     };
   });
 

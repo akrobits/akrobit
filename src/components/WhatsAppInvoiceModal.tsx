@@ -124,9 +124,16 @@ export const WhatsAppInvoiceModal: React.FC<WhatsAppInvoiceModalProps> = ({
                     {(invoice.consolidatedItems || []).map((item, idx) => (
                       <div key={idx} className="px-3 py-2 flex items-center justify-between gap-2 text-xs">
                         <div className="min-w-0">
-                          <p className="font-bold text-[#145f96]">{item.label}</p>
+                          <p className="font-bold text-[#145f96]">
+                            {item.label}
+                            {typeof item.daysElapsed === 'number' && item.daysElapsed > 0
+                              ? ` · ${item.daysElapsed}d`
+                              : ''}
+                          </p>
                           <p className="text-[11px] text-slate-500">
                             Cap: {formatCurrency(item.principal, item.currency)} ({item.interestRate}%)
+                            {(item.accruedInterest ?? 0) > 0 &&
+                              ` · Int: +${formatCurrency(item.accruedInterest ?? 0, item.currency)}`}
                           </p>
                         </div>
                         <span className="font-mono font-bold text-slate-900 tabular-nums shrink-0">
@@ -156,21 +163,89 @@ export const WhatsAppInvoiceModal: React.FC<WhatsAppInvoiceModalProps> = ({
                   </div>
                 </div>
               ) : invoice.kind === 'credit' ? (
+                invoice.interestMode === 'prorated_daily' ? (
+                  <>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-slate-500">Capital otorgado:</span>
+                      <span className="font-mono font-bold text-[#145f96] tabular-nums">
+                        {formatCurrency(invoice.amount, invoice.currency)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-slate-500">
+                        Tasa mensual ({invoice.interestRate}%):
+                      </span>
+                      <span className="font-semibold text-slate-700 text-right">
+                        Proporcional al día de pago
+                      </span>
+                    </div>
+                    <div className="border-t border-slate-200 pt-2 flex justify-between gap-2 text-sm font-bold text-[#145f96]">
+                      <span>Referencia a 30 días:</span>
+                      <span className="font-mono tabular-nums">
+                        {formatCurrency(
+                          invoice.projected30DayTotal ??
+                            round2(invoice.amount + (invoice.projected30DayInterest ?? 0)),
+                          invoice.currency
+                        )}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-slate-500">Capital otorgado:</span>
+                      <span className="font-mono font-semibold tabular-nums">
+                        {formatCurrency(invoice.amount, invoice.currency)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <span className="text-slate-500">Porcentaje ({invoice.interestRate}%):</span>
+                      <span className="font-mono font-semibold tabular-nums">
+                        {formatCurrency(round2(invoice.newBalance - invoice.amount), invoice.currency)}
+                      </span>
+                    </div>
+                    <div className="border-t border-slate-200 pt-2 flex justify-between gap-2 text-base font-bold text-[#145f96]">
+                      <span>Total crédito:</span>
+                      <span className="font-mono tabular-nums">
+                        {formatCurrency(invoice.newBalance, invoice.currency)}
+                      </span>
+                    </div>
+                  </>
+                )
+              ) : invoice.interestMode === 'prorated_daily' ? (
                 <>
                   <div className="flex justify-between gap-2">
-                    <span className="text-slate-500">Capital otorgado:</span>
-                    <span className="font-mono font-semibold tabular-nums">
-                      {formatCurrency(invoice.amount, invoice.currency)}
+                    <span className="text-slate-500">Capital anterior:</span>
+                    <span className="font-mono tabular-nums">
+                      {formatCurrency(invoice.previousBalance, invoice.currency)}
                     </span>
                   </div>
                   <div className="flex justify-between gap-2">
-                    <span className="text-slate-500">Porcentaje ({invoice.interestRate}%):</span>
+                    <span className="text-slate-500">
+                      Interés ({invoice.daysElapsed ?? 0} día{(invoice.daysElapsed ?? 0) === 1 ? '' : 's'} · {invoice.interestRate}%):
+                    </span>
+                    <span className="font-mono font-semibold text-[#df7729] tabular-nums">
+                      + {formatCurrency(invoice.accruedInterest ?? 0, invoice.currency)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">Total exigible al día:</span>
                     <span className="font-mono font-semibold tabular-nums">
-                      {formatCurrency(round2(invoice.newBalance - invoice.amount), invoice.currency)}
+                      {formatCurrency(
+                        invoice.totalDueToday ??
+                          round2(invoice.previousBalance + (invoice.accruedInterest ?? 0)),
+                        invoice.currency
+                      )}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">Abono realizado:</span>
+                    <span className="font-mono font-bold text-[#4d7c0f] tabular-nums">
+                      - {formatCurrency(invoice.amount, invoice.currency)}
                     </span>
                   </div>
                   <div className="border-t border-slate-200 pt-2 flex justify-between gap-2 text-base font-bold text-[#145f96]">
-                    <span>Total crédito:</span>
+                    <span>Nuevo saldo capital:</span>
                     <span className="font-mono tabular-nums">
                       {formatCurrency(invoice.newBalance, invoice.currency)}
                     </span>

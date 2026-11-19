@@ -58,11 +58,12 @@ service cloud.firestore {
     // --- Validation Blueprints ---
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'displayName', 'role', 'active', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'displayName', 'role', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'role', 'active', 'isOnline', 'lastSeenAt', 'createdAt', 'updatedAt'])
         && isValidId(data.uid)
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
         && data.role is string && (data.role == 'admin' || data.role == 'employee')
-        && data.active is bool;
+        && data.active is bool
+        && (!('isOnline' in data) || data.isOnline is bool);
     }
 
     function isValidUserPrivateInfo(data) {
@@ -101,6 +102,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'clientId', 'clientName', 'currency', 'principal',
           'interestRate', 'initialTotal', 'currentBalance', 'status',
+          'interestMode', 'lastPaymentAt',
           'orgId', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
@@ -112,6 +114,7 @@ service cloud.firestore {
         && data.initialTotal is number && data.initialTotal > 0 && data.initialTotal <= 200000000
         && data.currentBalance is number && data.currentBalance >= 0 && data.currentBalance <= 200000000
         && data.status is string && (data.status == 'active' || data.status == 'settled')
+        && (!('interestMode' in data) || (data.interestMode is string && (data.interestMode == 'prorated_daily' || data.interestMode == 'pre_added')))
         && data.orgId == 'akrobit'
         && isValidId(data.createdBy)
         && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 80;
@@ -201,13 +204,17 @@ service cloud.firestore {
           data.activeCredits.size() == 0 || (
             data.activeCredits[0] is map &&
             data.activeCredits[0].keys().hasAll(['label', 'currency', 'principal', 'interestRate', 'currentBalance', 'dateLabel']) &&
-            data.activeCredits[0].keys().hasOnly(['label', 'currency', 'principal', 'interestRate', 'currentBalance', 'dateLabel']) &&
+            data.activeCredits[0].keys().hasOnly(['label', 'currency', 'principal', 'interestRate', 'currentBalance', 'dateLabel', 'lastActivityMs', 'interestMode', 'projected30DayInterest', 'projected30DayTotal']) &&
             data.activeCredits[0].label is string && data.activeCredits[0].label.size() <= 60 &&
             data.activeCredits[0].currency is string && (data.activeCredits[0].currency == 'NIO' || data.activeCredits[0].currency == 'USD') &&
             data.activeCredits[0].principal is number &&
             data.activeCredits[0].interestRate is number &&
             data.activeCredits[0].currentBalance is number &&
-            data.activeCredits[0].dateLabel is string && data.activeCredits[0].dateLabel.size() <= 60
+            data.activeCredits[0].dateLabel is string && data.activeCredits[0].dateLabel.size() <= 60 &&
+            (!('lastActivityMs' in data.activeCredits[0]) || data.activeCredits[0].lastActivityMs is number) &&
+            (!('interestMode' in data.activeCredits[0]) || (data.activeCredits[0].interestMode is string && (data.activeCredits[0].interestMode == 'prorated_daily' || data.activeCredits[0].interestMode == 'pre_added'))) &&
+            (!('projected30DayInterest' in data.activeCredits[0]) || data.activeCredits[0].projected30DayInterest is number) &&
+            (!('projected30DayTotal' in data.activeCredits[0]) || data.activeCredits[0].projected30DayTotal is number)
           )
         )
         && data.recentTransactions is list && data.recentTransactions.size() <= 100
@@ -254,7 +261,7 @@ service cloud.firestore {
             isOwner(userId)
             && incoming().role == existing().role
             && incoming().active == existing().active
-            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'isOnline', 'lastSeenAt', 'updatedAt'])
           )
         );
       allow delete: if isValidId(userId) && isAdmin();
@@ -342,7 +349,7 @@ service cloud.firestore {
             && incoming().interestRate == existing().interestRate
             && incoming().initialTotal == existing().initialTotal
             && incoming().currency == existing().currency
-            && incoming().diff(existing()).affectedKeys().hasOnly(['currentBalance', 'status', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['currentBalance', 'status', 'lastPaymentAt', 'updatedAt'])
           )
         );
       allow delete: if isValidId(creditId) && isAdmin();

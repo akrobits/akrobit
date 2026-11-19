@@ -1,4 +1,10 @@
-import type { CurrencyCode, InvoicePayload } from '../types';
+import type {
+  Client,
+  Credit,
+  CreditTransaction,
+  CurrencyCode,
+  InvoicePayload,
+} from '../types';
 
 export const INTEREST_RATE_OPTIONS = [5, 6, 7, 8, 9, 10] as const;
 
@@ -33,6 +39,247 @@ export function calculateInitialCreditTotal(principal: number, interestRate: num
   return round2(principal + interest);
 }
 
+/**
+ * Computes prorated interest over a 30-day base cycle, always rounded UP to the next whole integer.
+ * Example: 890 * 7% at 30 days = ceil(62.30) = 63; at 20 days = ceil(41.5333) = 42; at 36 days = ceil(74.76) = 75.
+ */
+export function calculateProratedInterestCeil(
+  baseAmount: number,
+  interestRate: number,
+  daysElapsed: number
+): number {
+  if (baseAmount <= 0 || interestRate <= 0 || daysElapsed <= 0) return 0;
+  const exact =
+    Math.round(((baseAmount * interestRate * daysElapsed) / (100 * 30)) * 10000) / 10000;
+  return Math.ceil(exact);
+}
+
+export function toTimestampMillis(ts: unknown): number {
+  if (typeof ts === 'number' && Number.isFinite(ts)) {
+    return ts;
+  }
+  if (ts instanceof Date) {
+    return ts.getTime();
+  }
+  if (ts && typeof ts === 'object') {
+    if ('toMillis' in ts && typeof (ts as { toMillis: unknown }).toMillis === 'function') {
+      return (ts as { toMillis: () => number }).toMillis();
+    }
+    if ('seconds' in ts && typeof (ts as { seconds: unknown }).seconds === 'number') {
+      return (ts as { seconds: number }).seconds * 1000;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Exact calendar-day difference in local dates (immune to hour-of-day shifts or DST).
+ */
+export function calculateCalendarDaysElapsed(
+  startMs: number,
+  nowMs: number = Date.now()
+): number {
+  if (!startMs || startMs <= 0 || nowMs <= startMs) return 0;
+  const start = new Date(startMs);
+  const end = new Date(nowMs);
+  const startDay = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
+  const endDay = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
+  return Math.max(0, Math.round((endDay - startDay) / 86_400_000));
+}
+
+export function getCreditLastActivityMs(
+  credit: Pick<Credit, 'id' | 'createdAt' | 'lastPaymentAt'>,
+  transactions: CreditTransaction[]
+): number {
+  let latestPaymentMs = 0;
+  for (const tx of transactions) {
+    if (tx.creditId !== credit.id || tx.type !== 'payment') continue;
+    const ms = toTimestampMillis(tx.createdAt);
+    if (ms > latestPaymentMs) latestPaymentMs = ms;
+  }
+  const creditPaymentMs = toTimestampMillis(credit.lastPaymentAt);
+  const bestPaymentMs = Math.max(latestPaymentMs, creditPaymentMs);
+  if (bestPaymentMs > 0) return bestPaymentMs;
+
+  const createdMs = toTimestampMillis(credit.createdAt);
+  return createdMs > 0 ? createdMs : Date.now();
+}
+
+export interface LiveCreditStatus {
+  baseBalance: number;
+  lastActivityMs: number;
+  daysElapsed: number;
+  accruedInterest: number;
+  totalDueToday: number;
+  projected30DayInterest: number;
+  projected30DayTotal: number;
+  isProratedDaily: boolean;
+}
+
+export function calculateLiveCreditStatus(
+  credit: Credit,
+  transactions: CreditTransaction[],
+  nowMs: number = Date.now()
+): LiveCreditStatus {
+  const baseBalance = round2(Math.max(0, credit.currentBalance));
+  const isProratedDaily = credit.interestMode === 'prorated_daily';
+
+  if (credit.status !== 'active' || baseBalance <= 0) {
+    return {
+      baseBalance: 0,
+      lastActivityMs: 0,
+      daysElapsed: 0,
+      accruedInterest: 0,
+      totalDueToday: 0,
+      projected30DayInterest: 0,
+      projected30DayTotal: 0,
+      isProratedDaily,
+    };
+  }
+
+  const lastActivityMs = getCreditLastActivityMs(credit, transactions);
+  const daysElapsed = calculateCalendarDaysElapsed(lastActivityMs, nowMs);
+
+  if (isProratedDaily) {
+    const accruedInterest = calculateProratedInterestCeil(
+      baseBalance,
+      credit.interestRate,
+      daysElapsed
+    );
+    const totalDueToday = round2(baseBalance + accruedInterest);
+    const projected30DayInterest = calculateInterestCeil(baseBalance, credit.interestRate);
+    const projected30DayTotal = round2(baseBalance + projected30DayInterest);
+    return {
+      baseBalance,
+      lastActivityMs,
+      daysElapsed,
+      accruedInterest,
+      totalDueToday,
+      projected30DayInterest,
+      projected30DayTotal,
+      isProratedDaily: true,
+    };
+  }
+
+  // Legacy pre-added credit: first 30 days are already included in currentBalance; after day 30, extra days accrue.
+  const extraDays = Math.max(0, daysElapsed - 30);
+  const accruedInterest =
+    extraDays > 0
+      ? calculateProratedInterestCeil(baseBalance, credit.interestRate, extraDays)
+      : 0;
+  return {
+    baseBalance,
+    lastActivityMs,
+    daysElapsed,
+    accruedInterest,
+    totalDueToday: round2(baseBalance + accruedInterest),
+    projected30DayInterest: 0,
+    projected30DayTotal: baseBalance,
+    isProratedDaily: false,
+  };
+}
+
+export type ModuleOverdueTier = 'normal' | 'orange' | 'red';
+export type PortalAgingTier = 'green' | 'orange' | 'red';
+
+export function getModuleOverdueTier(daysElapsed: number): ModuleOverdueTier {
+  if (daysElapsed >= 30) return 'red';
+  if (daysElapsed >= 25) return 'orange';
+  return 'normal';
+}
+
+export function getPortalAgingTier(daysElapsed: number): PortalAgingTier {
+  if (daysElapsed >= 30) return 'red';
+  if (daysElapsed >= 20) return 'orange';
+  return 'green';
+}
+
+export interface OverdueClientAlert {
+  key: string;
+  moduleId: string;
+  moduleLabel: string;
+  client: Client;
+  maxDaysWithoutPayment: number;
+  overdueCreditsCount: number;
+  totalNio: number;
+  totalUsd: number;
+  credits: Credit[];
+  transactions: CreditTransaction[];
+}
+
+export function buildOverdueClientAlerts(params: {
+  moduleId: string;
+  moduleLabel: string;
+  clients: Client[];
+  credits: Credit[];
+  transactions: CreditTransaction[];
+  nowMs?: number;
+}): OverdueClientAlert[] {
+  const { moduleId, moduleLabel, clients, credits, transactions, nowMs = Date.now() } = params;
+  const activeClientMap = new Map<string, Client>();
+  for (const client of clients) {
+    if (client.active !== false) {
+      activeClientMap.set(client.id, client);
+    }
+  }
+
+  const creditsByClient = new Map<string, Credit[]>();
+  for (const cr of credits) {
+    const list = creditsByClient.get(cr.clientId) || [];
+    list.push(cr);
+    creditsByClient.set(cr.clientId, list);
+  }
+
+  const txsByClient = new Map<string, CreditTransaction[]>();
+  for (const tx of transactions) {
+    const list = txsByClient.get(tx.clientId) || [];
+    list.push(tx);
+    txsByClient.set(tx.clientId, list);
+  }
+
+  const alerts: OverdueClientAlert[] = [];
+
+  for (const [clientId, client] of activeClientMap.entries()) {
+    const clientCredits = creditsByClient.get(clientId) || [];
+    const clientTxs = txsByClient.get(clientId) || [];
+
+    let maxDays = 0;
+    let overdueCount = 0;
+    let totalNio = 0;
+    let totalUsd = 0;
+
+    for (const cr of clientCredits) {
+      if (cr.status !== 'active' || cr.currentBalance <= 0) continue;
+      const live = calculateLiveCreditStatus(cr, clientTxs, nowMs);
+      if (cr.currency === 'NIO') totalNio = round2(totalNio + live.totalDueToday);
+      else totalUsd = round2(totalUsd + live.totalDueToday);
+
+      if (live.daysElapsed >= 30) {
+        overdueCount += 1;
+        if (live.daysElapsed > maxDays) maxDays = live.daysElapsed;
+      }
+    }
+
+    if (overdueCount > 0) {
+      alerts.push({
+        key: `${moduleId}:${client.id}`,
+        moduleId,
+        moduleLabel,
+        client,
+        maxDaysWithoutPayment: maxDays,
+        overdueCreditsCount: overdueCount,
+        totalNio,
+        totalUsd,
+        credits: clientCredits,
+        transactions: clientTxs,
+      });
+    }
+  }
+
+  alerts.sort((a, b) => b.maxDaysWithoutPayment - a.maxDaysWithoutPayment);
+  return alerts;
+}
+
 export interface PaymentCalculationResult {
   remainingBeforeInterest: number;
   interestAdded: number;
@@ -41,10 +288,7 @@ export interface PaymentCalculationResult {
 }
 
 /**
- * Credit-on-remaining-balance calculation:
- * 1. Subtract payment from currentBalance.
- * 2. If remaining <= 0 -> settled (balance = 0, no interest charged on 0).
- * 3. Otherwise -> compute selected interestRate% rounded UP to the next whole integer, and add it.
+ * Legacy pre-added balance calculation (kept for fallback on legacy credits).
  */
 export function calculatePaymentOnBalance(
   currentBalance: number,
@@ -72,6 +316,43 @@ export function calculatePaymentOnBalance(
     interestAdded,
     newBalance,
     settled: false,
+  };
+}
+
+export interface ProratedPaymentResult {
+  baseBalance: number;
+  daysElapsed: number;
+  accruedInterest: number;
+  totalDueToday: number;
+  newBalance: number;
+  settled: boolean;
+}
+
+/**
+ * Prorated daily balance settlement:
+ * 1. Compute accrued interest up to the exact payment day (rounded UP).
+ * 2. Total due today = baseBalance + accruedInterest.
+ * 3. Subtract payment -> remaining amount becomes the new capital base starting at Day 0.
+ */
+export function calculateProratedPayment(
+  baseBalance: number,
+  interestRate: number,
+  daysElapsed: number,
+  paymentAmount: number
+): ProratedPaymentResult {
+  const safeBase = round2(Math.max(0, baseBalance));
+  const accruedInterest = calculateProratedInterestCeil(safeBase, interestRate, daysElapsed);
+  const totalDueToday = round2(safeBase + accruedInterest);
+  const safePayment = round2(Math.max(0, paymentAmount));
+  const newBalance = round2(Math.max(0, totalDueToday - safePayment));
+
+  return {
+    baseBalance: safeBase,
+    daysElapsed,
+    accruedInterest,
+    totalDueToday,
+    newBalance,
+    settled: newBalance <= 0,
   };
 }
 
@@ -238,9 +519,14 @@ export function buildWhatsAppInvoiceText(payload: InvoicePayload): string {
         `*${item.label}*`,
         `Fecha crédito: ${item.dateLabel}`,
         `Moneda: ${item.currency === 'NIO' ? 'Córdobas (C$)' : 'Dólares (USD)'}`,
-        `Capital: ${formatCurrency(item.principal, item.currency)} (${item.interestRate}%)`,
-        `*Saldo pendiente: ${formatCurrency(item.currentBalance, item.currency)}*`
+        `Capital: ${formatCurrency(item.principal, item.currency)} (${item.interestRate}%)`
       );
+      if (typeof item.daysElapsed === 'number' && (item.accruedInterest ?? 0) > 0) {
+        lines.push(
+          `Interés acumulado (${item.daysElapsed} días): + ${formatCurrency(item.accruedInterest ?? 0, item.currency)}`
+        );
+      }
+      lines.push(`*Total pendiente al día: ${formatCurrency(item.currentBalance, item.currency)}*`);
       if (idx < items.length - 1) {
         lines.push('');
       }
@@ -257,9 +543,9 @@ export function buildWhatsAppInvoiceText(payload: InvoicePayload): string {
     if (payload.portalUrl && payload.portalCode) {
       lines.push(
         '────────────────────────',
-        'Consulta tu historial en vivo:',
+        'Consulta tu historial en tiempo real:',
         payload.portalUrl,
-        `Código de acceso: *${payload.portalCode}*`
+        `PIN: *${payload.portalCode}*`
       );
     }
 
@@ -284,34 +570,66 @@ export function buildWhatsAppInvoiceText(payload: InvoicePayload): string {
   lines.push(`Moneda: ${payload.currency === 'NIO' ? 'Córdobas (C$)' : 'Dólares (USD)'}`);
 
   if (payload.kind === 'credit') {
-    const interestValue = round2(payload.newBalance - payload.amount);
-    lines.push(
-      `Capital otorgado: ${formatCurrency(payload.amount, payload.currency)}`,
-      `Porcentaje (${payload.interestRate}%): ${formatCurrency(interestValue, payload.currency)}`,
-      `*Total del crédito: ${formatCurrency(payload.newBalance, payload.currency)}*`
-    );
-  } else {
-    lines.push(
-      `Saldo anterior: ${formatCurrency(payload.previousBalance, payload.currency)}`,
-      `Abono realizado: ${formatCurrency(payload.amount, payload.currency)}`
-    );
-    if ((payload.remainingBeforeInterest ?? 0) > 0) {
+    if (payload.interestMode === 'prorated_daily') {
+      const est30Interest =
+        payload.projected30DayInterest ??
+        calculateInterestCeil(payload.amount, payload.interestRate);
+      const est30Total =
+        payload.projected30DayTotal ?? round2(payload.amount + est30Interest);
+
       lines.push(
-        `Saldo restante: ${formatCurrency(payload.remainingBeforeInterest ?? 0, payload.currency)}`,
-        `Interés s/saldo (${payload.interestRate}%): ${formatCurrency(payload.interestAdded ?? 0, payload.currency)}`,
-        `*Nuevo saldo actual: ${formatCurrency(payload.newBalance, payload.currency)}*`
+        `Capital otorgado: *${formatCurrency(payload.amount, payload.currency)}*`,
+        `Tasa mensual (${payload.interestRate}% s/saldo): proporcional al día de pago`,
+        `Referencia a 30 días: ${formatCurrency(est30Total, payload.currency)} (+${formatCurrency(est30Interest, payload.currency)})`
       );
     } else {
-      lines.push('*Estado: CRÉDITO LIQUIDADO (Saldo 0.00)*');
+      const interestValue = round2(payload.newBalance - payload.amount);
+      lines.push(
+        `Capital otorgado: ${formatCurrency(payload.amount, payload.currency)}`,
+        `Porcentaje (${payload.interestRate}%): ${formatCurrency(interestValue, payload.currency)}`,
+        `*Total del crédito: ${formatCurrency(payload.newBalance, payload.currency)}*`
+      );
+    }
+  } else {
+    if (payload.interestMode === 'prorated_daily') {
+      const days = payload.daysElapsed ?? 0;
+      const accrued = payload.accruedInterest ?? 0;
+      const totalDay = payload.totalDueToday ?? round2(payload.previousBalance + accrued);
+
+      lines.push(
+        `Capital anterior: ${formatCurrency(payload.previousBalance, payload.currency)}`,
+        `Interés (${days} día${days === 1 ? '' : 's'} al ${payload.interestRate}%): + ${formatCurrency(accrued, payload.currency)}`,
+        `Total exigible al día: ${formatCurrency(totalDay, payload.currency)}`,
+        `Abono realizado: - ${formatCurrency(payload.amount, payload.currency)}`
+      );
+      if (payload.newBalance <= 0) {
+        lines.push('*Estado: CRÉDITO LIQUIDADO (Saldo 0.00)*');
+      } else {
+        lines.push(`*Nuevo saldo capital: ${formatCurrency(payload.newBalance, payload.currency)}*`);
+      }
+    } else {
+      lines.push(
+        `Saldo anterior: ${formatCurrency(payload.previousBalance, payload.currency)}`,
+        `Abono realizado: ${formatCurrency(payload.amount, payload.currency)}`
+      );
+      if ((payload.remainingBeforeInterest ?? 0) > 0) {
+        lines.push(
+          `Saldo restante: ${formatCurrency(payload.remainingBeforeInterest ?? 0, payload.currency)}`,
+          `Interés s/saldo (${payload.interestRate}%): ${formatCurrency(payload.interestAdded ?? 0, payload.currency)}`,
+          `*Nuevo saldo actual: ${formatCurrency(payload.newBalance, payload.currency)}*`
+        );
+      } else {
+        lines.push('*Estado: CRÉDITO LIQUIDADO (Saldo 0.00)*');
+      }
     }
   }
 
   if (payload.portalUrl && payload.portalCode) {
     lines.push(
       '────────────────────────',
-      'Consulta tu historial en vivo:',
+      'Consulta tu historial en tiempo real:',
       payload.portalUrl,
-      `Código de acceso: *${payload.portalCode}*`
+      `PIN: *${payload.portalCode}*`
     );
   }
 

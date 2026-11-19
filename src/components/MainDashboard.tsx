@@ -8,13 +8,21 @@ import {
 } from 'lucide-react';
 import {
   collection,
+  doc,
   onSnapshot,
   query,
+  serverTimestamp,
+  updateDoc,
   where,
 } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 import { ORG_ID, db } from '../lib/firebase';
-import { formatCurrency, round2 } from '../lib/finance';
+import {
+  buildOverdueClientAlerts,
+  calculateLiveCreditStatus,
+  formatCurrency,
+  round2,
+} from '../lib/finance';
 import { AdminNotificationsModal } from './AdminNotificationsModal';
 import { CreditCashModule } from './CreditCashModule';
 import { OfflineIndicator, PWAInstallButton } from './PWAControls';
@@ -103,6 +111,35 @@ export const MainDashboard: React.FC = () => {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!user || !user.emailVerified || (!isAdmin && profile?.active !== true)) return;
+
+    const userDocRef = doc(db, 'users', user.uid);
+    const sendHeartbeat = () => {
+      void updateDoc(userDocRef, {
+        isOnline: true,
+        lastSeenAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }).catch(() => {
+        // Ignore transient offline heartbeat errors
+      });
+    };
+
+    sendHeartbeat();
+    const interval = window.setInterval(sendHeartbeat, 60_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        sendHeartbeat();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [user, isAdmin, profile?.active]);
 
   useEffect(() => {
     if (!user || !user.emailVerified || (!isAdmin && profile?.active !== true)) return;
@@ -205,25 +242,46 @@ export const MainDashboard: React.FC = () => {
     [modRequests]
   );
 
+  const overdueAlerts = useMemo(
+    () =>
+      buildOverdueClientAlerts({
+        moduleId: 'credit_cash',
+        moduleLabel: 'Credit Cash',
+        clients,
+        credits,
+        transactions,
+      }),
+    [clients, credits, transactions]
+  );
+
   const pendingTeamCount = useMemo(
     () => (isAdmin ? teamUsers.filter((member) => !member.active).length : 0),
     [isAdmin, teamUsers]
   );
 
-  const totalPendingAlerts = pendingRequests.length + pendingTeamCount;
+  const totalPendingAlerts =
+    pendingRequests.length + overdueAlerts.length + pendingTeamCount;
 
   const summary = useMemo(() => {
     const activeClientCount = clients.filter((c) => c.active !== false).length;
+    const txsByClient = new Map<string, CreditTransaction[]>();
+    for (const tx of transactions) {
+      const list = txsByClient.get(tx.clientId) || [];
+      list.push(tx);
+      txsByClient.set(tx.clientId, list);
+    }
+
     let activeNio = 0;
     let activeUsd = 0;
     for (const c of credits) {
       if (c.status === 'active' && c.currentBalance > 0) {
-        if (c.currency === 'NIO') activeNio = round2(activeNio + c.currentBalance);
-        else activeUsd = round2(activeUsd + c.currentBalance);
+        const live = calculateLiveCreditStatus(c, txsByClient.get(c.clientId) || []);
+        if (c.currency === 'NIO') activeNio = round2(activeNio + live.totalDueToday);
+        else activeUsd = round2(activeUsd + live.totalDueToday);
       }
     }
     return { activeClientCount, activeNio, activeUsd };
-  }, [clients, credits]);
+  }, [clients, credits, transactions]);
 
   const displayName = profile?.displayName || user?.displayName || user?.email || 'Akrobit';
 
@@ -259,12 +317,16 @@ export const MainDashboard: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setNotificationsOpen(true)}
-                aria-label="Notificaciones de aprobación"
+                aria-label="Centro de alertas y aprobaciones"
                 className="relative min-h-[42px] min-w-[42px] flex items-center justify-center rounded-xl bg-white/10 hover:bg-white/20 transition-colors cursor-pointer"
               >
                 <Bell className="w-5 h-5" />
                 {totalPendingAlerts > 0 && (
-                  <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-[#df7729] text-white text-[11px] font-bold flex items-center justify-center shadow">
+                  <span
+                    className={`absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full text-white text-[11px] font-bold flex items-center justify-center shadow ${
+                      overdueAlerts.length > 0 ? 'bg-[#d12925]' : 'bg-[#df7729]'
+                    }`}
+                  >
                     {totalPendingAlerts}
                   </span>
                 )}
@@ -386,8 +448,13 @@ export const MainDashboard: React.FC = () => {
         onClose={() => setNotificationsOpen(false)}
         requests={modRequests}
         teamUsers={teamUsers}
+        overdueAlerts={overdueAlerts}
+        clients={clients}
+        credits={credits}
+        transactions={transactions}
         adminUid={user?.uid || ''}
         adminName={displayName}
+        onTriggerInvoice={(inv) => setActiveInvoice(inv)}
       />
 
       <WhatsAppInvoiceModal

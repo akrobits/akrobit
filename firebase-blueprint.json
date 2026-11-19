@@ -23,6 +23,13 @@
         "active": {
           "type": "boolean"
         },
+        "isOnline": {
+          "type": "boolean"
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "format": "date-time"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -178,6 +185,14 @@
         "status": {
           "type": "string",
           "enum": ["active", "settled"]
+        },
+        "interestMode": {
+          "type": "string",
+          "enum": ["prorated_daily", "pre_added"]
+        },
+        "lastPaymentAt": {
+          "type": "string",
+          "format": "date-time"
         },
         "orgId": {
           "type": "string",

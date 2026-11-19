@@ -1,6 +1,6 @@
 {
   "name": "Akrobit",
-  "description": "Plataforma corporativa para gestión y control operativo online. Lic. Elder Rafael Rocha",
+  "description": "Plataforma de registro, gestión y control operativo online! Lic. Elder Rafael Rocha",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

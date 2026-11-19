@@ -14,9 +14,11 @@ import {
 import { doc, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { ORG_ID, db } from '../lib/firebase';
 import {
+  calculateLiveCreditStatus,
   cleanPhoneInput,
   formatCurrency,
   generateDocId,
+  getModuleOverdueTier,
   round2,
   validateInternationalPhone,
 } from '../lib/finance';
@@ -261,16 +263,28 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
   });
 
   const clientBalances = useMemo(() => {
-    const map = new Map<string, { nio: number; usd: number }>();
+    const txsByClient = new Map<string, CreditTransaction[]>();
+    for (const tx of transactions) {
+      const list = txsByClient.get(tx.clientId) || [];
+      list.push(tx);
+      txsByClient.set(tx.clientId, list);
+    }
+
+    const map = new Map<string, { nio: number; usd: number; maxDaysWithoutPayment: number }>();
     for (const cr of credits) {
       if (cr.status !== 'active' || cr.currentBalance <= 0) continue;
-      const cur = map.get(cr.clientId) || { nio: 0, usd: 0 };
-      if (cr.currency === 'NIO') cur.nio = round2(cur.nio + cr.currentBalance);
-      else cur.usd = round2(cur.usd + cr.currentBalance);
+      const clientTxs = txsByClient.get(cr.clientId) || [];
+      const live = calculateLiveCreditStatus(cr, clientTxs);
+      const cur = map.get(cr.clientId) || { nio: 0, usd: 0, maxDaysWithoutPayment: 0 };
+      if (cr.currency === 'NIO') cur.nio = round2(cur.nio + live.totalDueToday);
+      else cur.usd = round2(cur.usd + live.totalDueToday);
+      if (live.daysElapsed > cur.maxDaysWithoutPayment) {
+        cur.maxDaysWithoutPayment = live.daysElapsed;
+      }
       map.set(cr.clientId, cur);
     }
     return map;
-  }, [credits]);
+  }, [credits, transactions]);
 
   const processPickedContact = async (rawName: string, rawTel: string, sourceLabel: string) => {
     const cleanName = rawName.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').trim();
@@ -608,17 +622,56 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
       ) : (
         <div className="rounded-2xl bg-white border border-slate-200 divide-y divide-slate-200/70 shadow-sm overflow-hidden akrobit-zebra-rows">
           {filteredClients.map((client) => {
-            const bal = clientBalances.get(client.id) || { nio: 0, usd: 0 };
+            const bal = clientBalances.get(client.id) || {
+              nio: 0,
+              usd: 0,
+              maxDaysWithoutPayment: 0,
+            };
+            const hasDebt = bal.nio > 0 || bal.usd > 0;
+            const overdueTier = hasDebt
+              ? getModuleOverdueTier(bal.maxDaysWithoutPayment)
+              : 'normal';
+
+            const rowUnderlineCls =
+              overdueTier === 'red'
+                ? 'shadow-[inset_0_-3px_0_0_#d12925]'
+                : overdueTier === 'orange'
+                  ? 'shadow-[inset_0_-3px_0_0_#df7729]'
+                  : '';
+
+            const nameUnderlineCls =
+              overdueTier === 'red'
+                ? 'underline decoration-[#d12925] decoration-2 underline-offset-4'
+                : overdueTier === 'orange'
+                  ? 'underline decoration-[#df7729] decoration-2 underline-offset-4'
+                  : '';
+
             return (
               <button
                 key={client.id}
                 type="button"
                 onClick={() => setSelectedClientId(client.id)}
-                className="w-full min-h-[64px] px-4 py-3 flex items-center justify-between gap-3 text-left hover:bg-[#69b8e9]/20 active:bg-[#69b8e9]/25 transition-colors cursor-pointer"
+                className={`w-full min-h-[64px] px-4 py-3 flex items-center justify-between gap-3 text-left hover:bg-[#69b8e9]/20 active:bg-[#69b8e9]/25 transition-colors cursor-pointer ${rowUnderlineCls}`}
               >
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-bold text-slate-900 truncate">{client.name}</p>
-                  <p className="text-xs text-slate-500 font-mono">{client.phone}</p>
+                  <p className={`text-sm font-bold text-slate-900 truncate ${nameUnderlineCls}`}>
+                    {client.name}
+                  </p>
+                  <p className="text-xs text-slate-500 font-mono truncate">
+                    {client.phone}
+                    {overdueTier === 'red' && (
+                      <span className="font-sans font-bold text-[#d12925]">
+                        {' '}
+                        · {bal.maxDaysWithoutPayment} días sin abono
+                      </span>
+                    )}
+                    {overdueTier === 'orange' && (
+                      <span className="font-sans font-bold text-[#df7729]">
+                        {' '}
+                        · {bal.maxDaysWithoutPayment} días sin abono
+                      </span>
+                    )}
+                  </p>
                 </div>
 
                 <div className="text-right shrink-0 font-mono text-xs tabular-nums">

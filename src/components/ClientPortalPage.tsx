@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
   CreditCard,
   ExternalLink,
@@ -25,8 +26,12 @@ import {
 import { useBackHandler } from '../lib/backNavigation';
 import {
   buildWhatsAppLink,
+  calculateCalendarDaysElapsed,
+  calculateProratedInterestCeil,
   formatCurrency,
+  getPortalAgingTier,
   isAndroidDevice,
+  round2,
 } from '../lib/finance';
 import type { ClientPortalSnapshot } from '../types';
 
@@ -45,6 +50,7 @@ export const ClientPortalPage: React.FC = () => {
     }
   });
   const [portal, setPortal] = useState<ClientPortalSnapshot | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -66,6 +72,21 @@ export const ClientPortalPage: React.FC = () => {
     if (typeof document !== 'undefined') {
       document.title = 'Akrobit · Portal de Clientes';
     }
+  }, []);
+
+  useEffect(() => {
+    const refreshNow = () => setNowMs(Date.now());
+    const interval = window.setInterval(refreshNow, 60_000);
+    window.addEventListener('focus', refreshNow);
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshNow();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refreshNow);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, []);
 
   useEffect(() => {
@@ -164,6 +185,78 @@ export const ClientPortalPage: React.FC = () => {
       ? `Hola Akrobit, soy ${portal.clientName}. Escribo respecto a mi estado de cuenta.`
       : 'Hola Akrobit, escribo respecto a mi estado de cuenta.'
   );
+
+  const livePortalSummary = useMemo(() => {
+    if (!portal) {
+      return {
+        liveCredits: [],
+        totalNio: 0,
+        totalUsd: 0,
+        maxDaysWithoutPayment: 0,
+        overallTier: 'green' as const,
+      };
+    }
+
+    let totalNio = 0;
+    let totalUsd = 0;
+    let maxDaysWithoutPayment = 0;
+
+    const liveCredits = portal.activeCredits.map((cr) => {
+      const hasActivity = typeof cr.lastActivityMs === 'number' && cr.lastActivityMs > 0;
+      const daysElapsed = hasActivity
+        ? calculateCalendarDaysElapsed(cr.lastActivityMs!, nowMs)
+        : 0;
+
+      let accruedInterest = 0;
+      if (hasActivity) {
+        if (cr.interestMode === 'prorated_daily') {
+          accruedInterest = calculateProratedInterestCeil(
+            cr.currentBalance,
+            cr.interestRate,
+            daysElapsed
+          );
+        } else {
+          const extraDays = Math.max(0, daysElapsed - 30);
+          if (extraDays > 0) {
+            accruedInterest = calculateProratedInterestCeil(
+              cr.currentBalance,
+              cr.interestRate,
+              extraDays
+            );
+          }
+        }
+      }
+
+      const totalDueToday = round2(cr.currentBalance + accruedInterest);
+      if (cr.currency === 'NIO') totalNio = round2(totalNio + totalDueToday);
+      else totalUsd = round2(totalUsd + totalDueToday);
+
+      if (daysElapsed > maxDaysWithoutPayment) {
+        maxDaysWithoutPayment = daysElapsed;
+      }
+
+      return {
+        ...cr,
+        daysElapsed,
+        accruedInterest,
+        totalDueToday,
+        tier: getPortalAgingTier(daysElapsed),
+      };
+    });
+
+    if (portal.activeCredits.length === 0) {
+      totalNio = portal.totalNio;
+      totalUsd = portal.totalUsd;
+    }
+
+    return {
+      liveCredits,
+      totalNio,
+      totalUsd,
+      maxDaysWithoutPayment,
+      overallTier: getPortalAgingTier(maxDaysWithoutPayment),
+    };
+  }, [portal, nowMs]);
 
   return (
     <div className="min-h-[100dvh] bg-slate-50 flex flex-col">
@@ -315,7 +408,7 @@ export const ClientPortalPage: React.FC = () => {
                 </button>
               </div>
 
-              {portal.totalNio <= 0 && portal.totalUsd <= 0 ? (
+              {livePortalSummary.totalNio <= 0 && livePortalSummary.totalUsd <= 0 ? (
                 <div className="rounded-xl bg-[#a1d63e]/20 border border-[#a1d63e]/50 px-4 py-3 flex items-center gap-2.5">
                   <CheckCircle2 className="w-5 h-5 text-[#a1d63e] shrink-0" />
                   <div>
@@ -326,25 +419,76 @@ export const ClientPortalPage: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div className="rounded-xl bg-white/10 px-3.5 py-2.5 border border-white/15">
-                    <span className="text-[11px] text-white/75 block">Saldo en Córdobas</span>
-                    <span className="text-base font-bold font-mono tabular-nums text-[#a1d63e]">
-                      {formatCurrency(portal.totalNio, 'NIO')}
-                    </span>
+                <>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div className="rounded-xl bg-white/10 px-3.5 py-2.5 border border-white/15">
+                      <span className="text-[11px] text-white/75 block">Total al día (C$)</span>
+                      <span className="text-base font-bold font-mono tabular-nums text-[#a1d63e]">
+                        {formatCurrency(livePortalSummary.totalNio, 'NIO')}
+                      </span>
+                    </div>
+                    <div className="rounded-xl bg-white/10 px-3.5 py-2.5 border border-white/15">
+                      <span className="text-[11px] text-white/75 block">Total al día (USD)</span>
+                      <span className="text-base font-bold font-mono tabular-nums text-[#69b8e9]">
+                        {formatCurrency(livePortalSummary.totalUsd, 'USD')}
+                      </span>
+                    </div>
                   </div>
-                  <div className="rounded-xl bg-white/10 px-3.5 py-2.5 border border-white/15">
-                    <span className="text-[11px] text-white/75 block">Saldo en Dólares</span>
-                    <span className="text-base font-bold font-mono tabular-nums text-[#69b8e9]">
-                      {formatCurrency(portal.totalUsd, 'USD')}
-                    </span>
-                  </div>
-                </div>
+
+                  {/* Corporate Aging Banner: Green (1-19d) | Orange (20-29d) | Red (30+d) */}
+                  {(() => {
+                    const days = livePortalSummary.maxDaysWithoutPayment;
+                    const tier = livePortalSummary.overallTier;
+
+                    if (tier === 'red') {
+                      return (
+                        <div className="rounded-xl bg-[#d12925] px-4 py-3 flex items-start gap-2.5 shadow-sm">
+                          <AlertTriangle className="w-5 h-5 text-white shrink-0 mt-0.5" />
+                          <div className="text-xs leading-snug text-white">
+                            <p className="font-bold text-sm">
+                              Llevas {days} días sin realizar abono o pago
+                            </p>
+                            <p className="text-white/90 mt-0.5">
+                              El interés se calcula proporcionalmente sobre tu saldo de capital hasta el día exacto de tu pago.
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    if (tier === 'orange') {
+                      return (
+                        <div className="rounded-xl bg-[#df7729] px-4 py-2.5 flex items-center justify-between gap-2 text-xs text-white shadow-sm">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="w-2.5 h-2.5 rounded-full bg-white shrink-0" />
+                            <span className="font-bold truncate">
+                              {days} días sin abono · Próximo a vencimiento (30 días)
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="rounded-xl bg-[#a1d63e]/20 border border-[#a1d63e]/50 px-3.5 py-2 flex items-center justify-between gap-2 text-xs">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-2.5 h-2.5 rounded-full bg-[#a1d63e] shrink-0" />
+                          <span className="font-bold text-[#a1d63e] truncate">
+                            {days === 0
+                              ? 'Cuenta al día · Hoy es día 0'
+                              : `Cuenta al día · ${days} día${days === 1 ? '' : 's'} transcurrido${days === 1 ? '' : 's'}`}
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-white/80 shrink-0">Estado normal</span>
+                      </div>
+                    );
+                  })()}
+                </>
               )}
             </div>
 
-            {/* Active Credits Breakdown */}
-            {portal.activeCredits.length > 0 && (
+            {/* Active Credits Breakdown (Read-Only, Live Daily Interest) */}
+            {livePortalSummary.liveCredits.length > 0 && (
               <div className="rounded-2xl bg-white border border-slate-200 overflow-hidden shadow-sm">
                 <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
                   <div className="flex items-center gap-2 text-sm font-bold text-[#145f96]">
@@ -352,31 +496,82 @@ export const ClientPortalPage: React.FC = () => {
                     <span>Créditos Activos</span>
                   </div>
                   <span className="text-xs font-semibold text-slate-500">
-                    {portal.activeCredits.length} activo(s)
+                    {livePortalSummary.liveCredits.length} activo(s)
                   </span>
                 </div>
 
                 <div className="divide-y divide-slate-200/70 akrobit-zebra-rows">
-                  {portal.activeCredits.map((cr, idx) => (
-                    <div
-                      key={`${cr.label}-${idx}`}
-                      className="px-4 py-3 flex items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-bold text-[#145f96]">{cr.label}</p>
-                        <p className="text-xs text-slate-500">
-                          {cr.dateLabel} · Cap: {formatCurrency(cr.principal, cr.currency)} (
-                          {cr.interestRate}%)
-                        </p>
+                  {livePortalSummary.liveCredits.map((cr, idx) => {
+                    const tierUnderlineCls =
+                      cr.tier === 'red'
+                        ? 'shadow-[inset_0_-3px_0_0_#d12925]'
+                        : cr.tier === 'orange'
+                          ? 'shadow-[inset_0_-3px_0_0_#df7729]'
+                          : 'shadow-[inset_0_-2px_0_0_#a1d63e]';
+                    const tierTextCls =
+                      cr.tier === 'red'
+                        ? 'text-[#d12925]'
+                        : cr.tier === 'orange'
+                          ? 'text-[#df7729]'
+                          : 'text-[#4d7c0f]';
+
+                    return (
+                      <div
+                        key={`${cr.label}-${idx}`}
+                        className={`px-4 py-3.5 space-y-2 ${tierUnderlineCls}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-sm font-bold text-[#145f96]">{cr.label}</p>
+                              <span className={`text-xs font-bold ${tierTextCls}`}>
+                                {cr.daysElapsed >= 30
+                                  ? `· ${cr.daysElapsed} días sin abono o pago`
+                                  : `· ${cr.daysElapsed} día${cr.daysElapsed === 1 ? '' : 's'}`}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500">
+                              {cr.dateLabel} · Tasa mensual: {cr.interestRate}% s/saldo
+                            </p>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span className="text-[11px] text-slate-500 block">
+                              Total al día de hoy
+                            </span>
+                            <span className="text-sm font-mono font-bold text-slate-900 tabular-nums">
+                              {formatCurrency(cr.totalDueToday, cr.currency)}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 rounded-xl bg-slate-50/90 border border-slate-200/80 px-3 py-2 text-[11px]">
+                          <div>
+                            <span className="text-slate-500 block">Capital vigente</span>
+                            <span className="font-mono font-bold text-slate-800 tabular-nums">
+                              {formatCurrency(cr.currentBalance, cr.currency)}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 block">
+                              Interés al día ({cr.daysElapsed}d)
+                            </span>
+                            <span className={`font-mono font-bold tabular-nums ${tierTextCls}`}>
+                              + {formatCurrency(cr.accruedInterest, cr.currency)}
+                            </span>
+                          </div>
+                          {cr.interestMode === 'prorated_daily' && cr.projected30DayTotal ? (
+                            <div className="col-span-2 sm:col-span-1">
+                              <span className="text-slate-500 block">Ref. a 30 días</span>
+                              <span className="font-mono font-semibold text-[#145f96] tabular-nums">
+                                {formatCurrency(cr.projected30DayTotal, cr.currency)}
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
-                      <div className="text-right shrink-0">
-                        <span className="text-[11px] text-slate-500 block">Saldo actual</span>
-                        <span className="text-sm font-mono font-bold text-slate-900 tabular-nums">
-                          {formatCurrency(cr.currentBalance, cr.currency)}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}

@@ -22,11 +22,15 @@ import {
   buildWhatsAppBusinessLink,
   calculateInitialCreditTotal,
   calculateInterestCeil,
+  calculateLiveCreditStatus,
   calculatePaymentOnBalance,
+  calculateProratedPayment,
   formatCurrency,
   generateDocId,
+  getPortalAgingTier,
   isAndroidDevice,
   round2,
+  type LiveCreditStatus,
 } from '../lib/finance';
 import {
   attachPortalSnapshotToBatch,
@@ -125,15 +129,33 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
   });
   useBackHandler(whatsappPickOpen, () => setWhatsappPickOpen(false));
 
+  const liveStatusByCreditId = useMemo(() => {
+    const map = new Map<string, LiveCreditStatus>();
+    for (const cr of activeCredits) {
+      map.set(cr.id, calculateLiveCreditStatus(cr, transactions));
+    }
+    return map;
+  }, [activeCredits, transactions]);
+
+  const maxDaysWithoutPayment = useMemo(() => {
+    let maxDays = 0;
+    for (const st of liveStatusByCreditId.values()) {
+      if (st.daysElapsed > maxDays) maxDays = st.daysElapsed;
+    }
+    return maxDays;
+  }, [liveStatusByCreditId]);
+
   const totalsByCurrency = useMemo(() => {
     let nio = 0;
     let usd = 0;
     for (const c of activeCredits) {
-      if (c.currency === 'NIO') nio = round2(nio + c.currentBalance);
-      else usd = round2(usd + c.currentBalance);
+      const live = liveStatusByCreditId.get(c.id);
+      const due = live ? live.totalDueToday : c.currentBalance;
+      if (c.currency === 'NIO') nio = round2(nio + due);
+      else usd = round2(usd + due);
     }
     return { nio, usd };
-  }, [activeCredits]);
+  }, [activeCredits, liveStatusByCreditId]);
 
   const parsedPrincipal = Number(principalInput) || 0;
   const computedCreditTotal = useMemo(
@@ -149,15 +171,41 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
     return activeCredits.find((c) => c.id === selectedCreditId) || null;
   }, [activeCredits, selectedCreditId]);
 
+  const activePaymentLiveStatus = useMemo(
+    () => (activePaymentCredit ? liveStatusByCreditId.get(activePaymentCredit.id) || null : null),
+    [activePaymentCredit, liveStatusByCreditId]
+  );
+
   const parsedPayment = Number(paymentInput) || 0;
   const paymentPreview = useMemo(() => {
-    if (!activePaymentCredit) return null;
-    return calculatePaymentOnBalance(
-      activePaymentCredit.currentBalance,
+    if (!activePaymentCredit || !activePaymentLiveStatus) return null;
+    if (activePaymentLiveStatus.isProratedDaily) {
+      const res = calculateProratedPayment(
+        activePaymentLiveStatus.baseBalance,
+        activePaymentCredit.interestRate,
+        activePaymentLiveStatus.daysElapsed,
+        parsedPayment
+      );
+      return {
+        mode: 'prorated_daily' as const,
+        ...res,
+      };
+    }
+
+    const effectiveStart = activePaymentLiveStatus.totalDueToday;
+    const legacy = calculatePaymentOnBalance(
+      effectiveStart,
       parsedPayment,
       activePaymentCredit.interestRate
     );
-  }, [activePaymentCredit, parsedPayment]);
+    return {
+      mode: 'pre_added' as const,
+      ...legacy,
+      totalDueToday: effectiveStart,
+      daysElapsed: activePaymentLiveStatus.daysElapsed,
+      accruedInterest: activePaymentLiveStatus.accruedInterest,
+    };
+  }, [activePaymentCredit, activePaymentLiveStatus, parsedPayment]);
 
   const formatDateTime = (ts: unknown): string => {
     if (ts && typeof ts === 'object' && 'toDate' in ts) {
@@ -206,16 +254,21 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
       const batch = writeBatch(db);
       const { portalCode, portalKey } = await resolveClientPortalCredentials(batch);
 
+      const safePrincipal = round2(parsedPrincipal);
+      const projectedInterest30 = calculateInterestCeil(safePrincipal, interestRate);
+
       const newCreditData: Credit = {
         id: creditId,
         clientId: client.id,
         clientName: client.name,
         currency,
-        principal: round2(parsedPrincipal),
+        principal: safePrincipal,
         interestRate,
         initialTotal: computedCreditTotal,
-        currentBalance: computedCreditTotal,
+        currentBalance: safePrincipal,
         status: 'active',
+        interestMode: 'prorated_daily',
+        lastPaymentAt: serverTimestamp(),
         orgId: ORG_ID,
         createdBy: currentUserId,
         createdByName: currentUserName,
@@ -229,11 +282,11 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         clientId: client.id,
         type: 'credit',
         currency,
-        amount: round2(parsedPrincipal),
+        amount: safePrincipal,
         interestRate,
         previousBalance: 0,
-        newBalance: computedCreditTotal,
-        note: `Crédito inicial ${interestRate}%`,
+        newBalance: safePrincipal,
+        note: `Crédito ${interestRate}% · Ref 30 días: ${formatCurrency(computedCreditTotal, currency)}`,
         orgId: ORG_ID,
         createdBy: currentUserId,
         createdByName: currentUserName,
@@ -262,10 +315,13 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         clientName: client.name,
         clientPhone: client.phone,
         currency,
-        amount: round2(parsedPrincipal),
+        amount: safePrincipal,
         interestRate,
         previousBalance: 0,
-        newBalance: computedCreditTotal,
+        newBalance: safePrincipal,
+        interestMode: 'prorated_daily',
+        projected30DayInterest: projectedInterest30,
+        projected30DayTotal: computedCreditTotal,
         creditLabel:
           activeCredits.length >= 1 ? `Credit Cash N°${activeCredits.length + 1}` : undefined,
         portalUrl: getPublicPortalUrl(),
@@ -292,7 +348,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
     setErrorMessage('');
     setStatusMessage('');
 
-    if (!activePaymentCredit || !paymentPreview) {
+    if (!activePaymentCredit || !paymentPreview || !activePaymentLiveStatus) {
       setErrorMessage(
         activeCredits.length > 1
           ? 'Selecciona obligatoriamente el crédito al que deseas aplicar el abono.'
@@ -304,8 +360,11 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
       setErrorMessage('Ingresa un monto de pago mayor que 0.');
       return;
     }
-    if (parsedPayment > activePaymentCredit.currentBalance) {
-      setErrorMessage('El pago no puede superar el saldo pendiente actual.');
+    const maxPayableToday = activePaymentLiveStatus.totalDueToday;
+    if (parsedPayment > maxPayableToday) {
+      setErrorMessage(
+        `El pago no puede superar el total exigible hoy (${formatCurrency(maxPayableToday, activePaymentCredit.currency)}).`
+      );
       return;
     }
 
@@ -316,13 +375,16 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
       const { portalCode, portalKey } = await resolveClientPortalCredentials(batch);
       const creditRef = doc(db, 'credits', activePaymentCredit.id);
       const nextStatus: 'active' | 'settled' = paymentPreview.settled ? 'settled' : 'active';
+      const nowServer = serverTimestamp();
 
       batch.update(creditRef, {
         currentBalance: paymentPreview.newBalance,
         status: nextStatus,
-        updatedAt: serverTimestamp(),
+        lastPaymentAt: nowServer,
+        updatedAt: nowServer,
       });
 
+      const isProrated = paymentPreview.mode === 'prorated_daily';
       const newTxData: CreditTransaction = {
         id: txId,
         creditId: activePaymentCredit.id,
@@ -334,19 +396,29 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         previousBalance: activePaymentCredit.currentBalance,
         newBalance: paymentPreview.newBalance,
         note: paymentPreview.settled
-          ? 'Abono final — Crédito liquidado'
-          : `Abono sobre saldo (+${activePaymentCredit.interestRate}% s/restante)`,
+          ? isProrated
+            ? `Liquidación total al día ${paymentPreview.daysElapsed} (+${formatCurrency(paymentPreview.accruedInterest, activePaymentCredit.currency)} int.)`
+            : 'Abono final — Crédito liquidado'
+          : isProrated
+            ? `Abono día ${paymentPreview.daysElapsed} (+${formatCurrency(paymentPreview.accruedInterest, activePaymentCredit.currency)} int.)`
+            : `Abono sobre saldo (+${activePaymentCredit.interestRate}% s/restante)`,
         orgId: ORG_ID,
         createdBy: currentUserId,
         createdByName: currentUserName,
-        createdAt: serverTimestamp(),
+        createdAt: nowServer,
       };
 
       batch.set(doc(db, 'transactions', txId), newTxData);
 
+      const nowLocalMs = Date.now();
       const updatedCredits = credits.map((cr) =>
         cr.id === activePaymentCredit.id
-          ? { ...cr, currentBalance: paymentPreview.newBalance, status: nextStatus }
+          ? {
+              ...cr,
+              currentBalance: paymentPreview.newBalance,
+              status: nextStatus,
+              lastPaymentAt: nowLocalMs,
+            }
           : cr
       );
       attachPortalSnapshotToBatch(
@@ -355,7 +427,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         client.id,
         client.name,
         updatedCredits,
-        [newTxData, ...transactions]
+        [{ ...newTxData, createdAt: nowLocalMs }, ...transactions]
       );
 
       await Promise.race([
@@ -371,8 +443,14 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         amount: round2(parsedPayment),
         interestRate: activePaymentCredit.interestRate,
         previousBalance: activePaymentCredit.currentBalance,
-        remainingBeforeInterest: paymentPreview.remainingBeforeInterest,
-        interestAdded: paymentPreview.interestAdded,
+        remainingBeforeInterest:
+          paymentPreview.mode === 'pre_added' ? paymentPreview.remainingBeforeInterest : undefined,
+        interestAdded:
+          paymentPreview.mode === 'pre_added' ? paymentPreview.interestAdded : undefined,
+        daysElapsed: paymentPreview.daysElapsed,
+        accruedInterest: paymentPreview.accruedInterest,
+        totalDueToday: paymentPreview.totalDueToday,
+        interestMode: activePaymentCredit.interestMode || 'pre_added',
         newBalance: paymentPreview.newBalance,
         creditLabel:
           activeCredits.length > 1 ? creditLabelById.get(activePaymentCredit.id) : undefined,
@@ -434,8 +512,13 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
 
         if (modifyTargetType === 'credit') {
           const newInitialTotal = calculateInitialCreditTotal(newVal, modifyNewRate);
-          const delta = round2(newInitialTotal - targetCredit.initialTotal);
-          newBalance = round2(Math.max(0, targetCredit.currentBalance + delta));
+          if (targetCredit.interestMode === 'prorated_daily') {
+            const deltaPrincipal = round2(newVal - targetCredit.principal);
+            newBalance = round2(Math.max(0, targetCredit.currentBalance + deltaPrincipal));
+          } else {
+            const delta = round2(newInitialTotal - targetCredit.initialTotal);
+            newBalance = round2(Math.max(0, targetCredit.currentBalance + delta));
+          }
           const nextStatus: 'active' | 'settled' = newBalance <= 0 ? 'settled' : 'active';
 
           batch.update(creditRef, {
@@ -577,8 +660,33 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
     const latestTx = creditTxs[0];
     const multiLabel =
       activeCredits.length > 1 ? `Credit Cash N°${index + 1}` : undefined;
+    const live = liveStatusByCreditId.get(credit.id) || calculateLiveCreditStatus(credit, transactions);
 
     if (latestTx && latestTx.type === 'payment') {
+      if (credit.interestMode === 'prorated_daily') {
+        const impliedTotalDay = round2(latestTx.previousBalance);
+        return {
+          kind: 'payment',
+          clientName: client.name,
+          clientPhone: client.phone,
+          currency: credit.currency,
+          amount: latestTx.amount,
+          interestRate: latestTx.interestRate,
+          previousBalance: latestTx.previousBalance,
+          daysElapsed: 0,
+          accruedInterest: 0,
+          totalDueToday: impliedTotalDay,
+          interestMode: 'prorated_daily',
+          newBalance: credit.currentBalance,
+          creditLabel: multiLabel,
+          portalUrl: getPublicPortalUrl(),
+          portalCode: client.portalCode,
+          attendedBy: latestTx.createdByName || currentUserName,
+          dateLabel: formatDateTime(latestTx.createdAt),
+          referenceId: latestTx.id,
+        };
+      }
+
       const breakdown = calculatePaymentOnBalance(
         latestTx.previousBalance,
         latestTx.amount,
@@ -594,6 +702,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         previousBalance: latestTx.previousBalance,
         remainingBeforeInterest: breakdown.remainingBeforeInterest,
         interestAdded: breakdown.interestAdded,
+        interestMode: credit.interestMode || 'pre_added',
         newBalance: credit.currentBalance,
         creditLabel: multiLabel,
         portalUrl: getPublicPortalUrl(),
@@ -612,7 +721,10 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
       amount: credit.principal,
       interestRate: credit.interestRate,
       previousBalance: 0,
-      newBalance: credit.currentBalance,
+      newBalance: live.totalDueToday,
+      interestMode: credit.interestMode || 'pre_added',
+      projected30DayInterest: live.projected30DayInterest,
+      projected30DayTotal: live.projected30DayTotal,
       creditLabel: multiLabel,
       portalUrl: getPublicPortalUrl(),
       portalCode: client.portalCode,
@@ -623,14 +735,19 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
   };
 
   const buildConsolidatedInvoicePayload = (): InvoicePayload => {
-    const consolidatedItems: ConsolidatedCreditItem[] = activeCredits.map((cr, idx) => ({
-      label: `Credit Cash N°${idx + 1}`,
-      currency: cr.currency,
-      principal: cr.principal,
-      interestRate: cr.interestRate,
-      currentBalance: cr.currentBalance,
-      dateLabel: formatDateTime(cr.createdAt),
-    }));
+    const consolidatedItems: ConsolidatedCreditItem[] = activeCredits.map((cr, idx) => {
+      const live = liveStatusByCreditId.get(cr.id) || calculateLiveCreditStatus(cr, transactions);
+      return {
+        label: `Credit Cash N°${idx + 1}`,
+        currency: cr.currency,
+        principal: cr.principal,
+        interestRate: cr.interestRate,
+        currentBalance: live.totalDueToday,
+        daysElapsed: live.daysElapsed,
+        accruedInterest: live.accruedInterest,
+        dateLabel: formatDateTime(cr.createdAt),
+      };
+    });
 
     return {
       kind: 'consolidated',
@@ -742,18 +859,53 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         {/* Separated Balances in NIO (C$) and USD */}
         <div className="grid grid-cols-2 gap-2.5">
           <div className="rounded-xl bg-white/10 px-3.5 py-2.5 border border-white/15">
-            <span className="text-[11px] text-white/75 block">Saldo en Córdobas</span>
+            <span className="text-[11px] text-white/75 block">Total exigible (C$)</span>
             <span className="text-base font-bold font-mono tabular-nums text-[#a1d63e]">
               {formatCurrency(totalsByCurrency.nio, 'NIO')}
             </span>
           </div>
           <div className="rounded-xl bg-white/10 px-3.5 py-2.5 border border-white/15">
-            <span className="text-[11px] text-white/75 block">Saldo en Dólares</span>
+            <span className="text-[11px] text-white/75 block">Total exigible (USD)</span>
             <span className="text-base font-bold font-mono tabular-nums text-[#69b8e9]">
               {formatCurrency(totalsByCurrency.usd, 'USD')}
             </span>
           </div>
         </div>
+
+        {/* Aging indicator when client has active debt */}
+        {activeCredits.length > 0 && (() => {
+          const headerTier = getPortalAgingTier(maxDaysWithoutPayment);
+          const dotColor =
+            headerTier === 'red'
+              ? 'bg-[#d12925]'
+              : headerTier === 'orange'
+                ? 'bg-[#df7729]'
+                : 'bg-[#a1d63e]';
+          const textColor =
+            headerTier === 'red'
+              ? 'text-[#fca5a5]'
+              : headerTier === 'orange'
+                ? 'text-[#fdba74]'
+                : 'text-[#a1d63e]';
+          const label =
+            maxDaysWithoutPayment >= 30
+              ? `Alerta: ${maxDaysWithoutPayment} días sin abono o pago`
+              : maxDaysWithoutPayment >= 20
+                ? `Atención: ${maxDaysWithoutPayment} días sin abono`
+                : `Al día: ${maxDaysWithoutPayment} día${maxDaysWithoutPayment === 1 ? '' : 's'} desde último movimiento`;
+
+          return (
+            <div className="mt-2.5 rounded-xl bg-white/10 px-3.5 py-2 border border-white/15 flex items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${dotColor}`} />
+                <span className={`font-bold truncate ${textColor}`}>{label}</span>
+              </div>
+              <span className="text-[11px] text-white/75 shrink-0 font-mono tabular-nums">
+                {activeCredits.length} crédito(s)
+              </span>
+            </div>
+          );
+        })()}
 
         {/* Client Portal 6-digit Secret Code Strip */}
         <div className="mt-2.5 rounded-xl bg-white/10 px-3.5 py-2.5 border border-white/15 flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -976,7 +1128,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
 
             <div>
               <span className="block text-xs font-bold text-slate-700 mb-1 text-right">
-                Total
+                Ref. 30 días
               </span>
               <div className="min-h-[46px] rounded-xl bg-slate-100 border border-slate-200 px-2.5 flex items-center justify-end font-mono text-xs sm:text-sm font-bold text-[#145f96] tabular-nums">
                 {formatCurrency(computedCreditTotal, currency)}
@@ -985,11 +1137,22 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
           </div>
 
           {parsedPrincipal > 0 && interestRate !== '' && (
-            <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-3.5 py-2 text-xs">
-              <span className="text-slate-600">Interés ({interestRate}%):</span>
-              <span className="font-mono font-bold text-[#df7729] tabular-nums">
-                {formatCurrency(calculateInterestCeil(parsedPrincipal, interestRate), currency)}
-              </span>
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-3.5 py-2.5 text-xs space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Capital inicial hoy (Día 0):</span>
+                <span className="font-mono font-bold text-[#145f96] tabular-nums">
+                  {formatCurrency(parsedPrincipal, currency)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Interés ref. 30 días ({interestRate}%):</span>
+                <span className="font-mono font-bold text-[#df7729] tabular-nums">
+                  + {formatCurrency(calculateInterestCeil(parsedPrincipal, interestRate), currency)}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 pt-1 border-t border-slate-200/80">
+                Cobro 100% sobre saldo del capital proporcional al día exacto de pago (base 30 días, redondeo al superior).
+              </p>
             </div>
           )}
 
@@ -1037,27 +1200,79 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                     <option value="" disabled>
                       Selecciona el crédito a abonar...
                     </option>
-                    {activeCredits.map((c, idx) => (
-                      <option key={c.id} value={c.id}>
-                        Credit Cash N°{idx + 1} · {formatCurrency(c.currentBalance, c.currency)} ({c.interestRate}% · Cap:{' '}
-                        {formatCurrency(c.principal, c.currency)})
-                      </option>
-                    ))}
+                    {activeCredits.map((c, idx) => {
+                      const live = liveStatusByCreditId.get(c.id);
+                      const dueToday = live ? live.totalDueToday : c.currentBalance;
+                      const days = live ? live.daysElapsed : 0;
+                      return (
+                        <option key={c.id} value={c.id}>
+                          Credit Cash N°{idx + 1} · Hoy: {formatCurrency(dueToday, c.currency)} (Cap:{' '}
+                          {formatCurrency(c.currentBalance, c.currency)} · {days}d · {c.interestRate}%)
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
               )}
 
-              {/* Horizontal Cantidad & Saldo columns */}
-              {activePaymentCredit && (
+              {/* Horizontal Cantidad & Total Exigible Hoy + Live Prorated Breakdown */}
+              {activePaymentCredit && activePaymentLiveStatus && (
                 <>
+                  <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 text-xs space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">Capital pendiente:</span>
+                      <span className="font-mono font-semibold text-slate-800 tabular-nums">
+                        {formatCurrency(activePaymentLiveStatus.baseBalance, activePaymentCredit.currency)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">Días transcurridos sin abono:</span>
+                      <span
+                        className={`font-mono font-bold tabular-nums ${
+                          activePaymentLiveStatus.daysElapsed >= 30
+                            ? 'text-[#d12925]'
+                            : activePaymentLiveStatus.daysElapsed >= 20
+                              ? 'text-[#df7729]'
+                              : 'text-[#4d7c0f]'
+                        }`}
+                      >
+                        {activePaymentLiveStatus.daysElapsed} día
+                        {activePaymentLiveStatus.daysElapsed === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-500">
+                        Interés proporcional ({activePaymentCredit.interestRate}%):
+                      </span>
+                      <span className="font-mono font-bold text-[#df7729] tabular-nums">
+                        + {formatCurrency(activePaymentLiveStatus.accruedInterest, activePaymentCredit.currency)}
+                      </span>
+                    </div>
+                    <div className="border-t border-slate-200 pt-1.5 flex items-center justify-between text-sm font-bold text-[#145f96]">
+                      <span>Total exigible hoy:</span>
+                      <span className="font-mono tabular-nums">
+                        {formatCurrency(activePaymentLiveStatus.totalDueToday, activePaymentCredit.currency)}
+                      </span>
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-2 gap-3 items-end">
                     <div>
-                      <label
-                        htmlFor="payment-amount"
-                        className="block text-xs font-bold text-slate-700 mb-1"
-                      >
-                        Cantidad (Abono)
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label
+                          htmlFor="payment-amount"
+                          className="block text-xs font-bold text-slate-700"
+                        >
+                          Cantidad (Abono)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setPaymentInput(String(activePaymentLiveStatus.totalDueToday))}
+                          className="text-[11px] font-bold text-[#145f96] hover:text-[#df7729] underline cursor-pointer whitespace-nowrap"
+                        >
+                          Liquidar hoy
+                        </button>
+                      </div>
                       <input
                         id="payment-amount"
                         type="number"
@@ -1073,47 +1288,79 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
 
                     <div>
                       <span className="block text-xs font-bold text-slate-700 mb-1 text-right">
-                        Saldo Actual
+                        Total Exigible Hoy
                       </span>
                       <div className="min-h-[46px] rounded-xl bg-slate-100 border border-slate-200 px-3 flex items-center justify-end font-mono text-sm font-bold text-[#145f96] tabular-nums">
-                        {formatCurrency(activePaymentCredit.currentBalance, activePaymentCredit.currency)}
+                        {formatCurrency(activePaymentLiveStatus.totalDueToday, activePaymentCredit.currency)}
                       </div>
                     </div>
                   </div>
 
-                  {/* Live calculation preview of credit-on-remaining-balance */}
+                  {/* Live calculation preview */}
                   {paymentPreview && parsedPayment > 0 && (
                     <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 text-xs space-y-1.5">
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">Restante tras abono:</span>
-                        <span className="font-mono font-semibold tabular-nums">
-                          {formatCurrency(
-                            paymentPreview.remainingBeforeInterest,
-                            activePaymentCredit.currency
-                          )}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-slate-500">
-                          Porcentaje automático ({activePaymentCredit.interestRate}%):
-                        </span>
-                        <span className="font-mono font-semibold text-[#df7729] tabular-nums">
-                          +{' '}
-                          {formatCurrency(
-                            paymentPreview.interestAdded,
-                            activePaymentCredit.currency
-                          )}
-                        </span>
-                      </div>
-                      <div className="border-t border-slate-200 pt-1.5 flex justify-between text-sm font-bold text-[#145f96]">
-                        <span>Nuevo saldo resultante:</span>
-                        <span className="font-mono tabular-nums">
-                          {formatCurrency(
-                            paymentPreview.newBalance,
-                            activePaymentCredit.currency
-                          )}
-                        </span>
-                      </div>
+                      {paymentPreview.mode === 'prorated_daily' ? (
+                        <>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">
+                              Total exigible al día {paymentPreview.daysElapsed}:
+                            </span>
+                            <span className="font-mono font-semibold tabular-nums">
+                              {formatCurrency(paymentPreview.totalDueToday, activePaymentCredit.currency)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Abono aplicado hoy:</span>
+                            <span className="font-mono font-bold text-[#4d7c0f] tabular-nums">
+                              - {formatCurrency(parsedPayment, activePaymentCredit.currency)}
+                            </span>
+                          </div>
+                          <div className="border-t border-slate-200 pt-1.5 flex justify-between text-sm font-bold text-[#145f96]">
+                            <span>Nuevo saldo capital:</span>
+                            <span className="font-mono tabular-nums">
+                              {formatCurrency(paymentPreview.newBalance, activePaymentCredit.currency)}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500">
+                            {paymentPreview.settled
+                              ? 'Crédito liquidado al 100% hoy.'
+                              : 'Al guardar, el contador de días vuelve a 0 desde hoy.'}
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">Restante tras abono:</span>
+                            <span className="font-mono font-semibold tabular-nums">
+                              {formatCurrency(
+                                paymentPreview.remainingBeforeInterest,
+                                activePaymentCredit.currency
+                              )}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-500">
+                              Porcentaje automático ({activePaymentCredit.interestRate}%):
+                            </span>
+                            <span className="font-mono font-semibold text-[#df7729] tabular-nums">
+                              +{' '}
+                              {formatCurrency(
+                                paymentPreview.interestAdded,
+                                activePaymentCredit.currency
+                              )}
+                            </span>
+                          </div>
+                          <div className="border-t border-slate-200 pt-1.5 flex justify-between text-sm font-bold text-[#145f96]">
+                            <span>Nuevo saldo resultante:</span>
+                            <span className="font-mono tabular-nums">
+                              {formatCurrency(
+                                paymentPreview.newBalance,
+                                activePaymentCredit.currency
+                              )}
+                            </span>
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
 
@@ -1283,6 +1530,82 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         </form>
       )}
 
+      {/* Active Credits Live Breakdown (prorated interest up to today + days without payment) */}
+      {activeCredits.length > 0 && (
+        <div className="rounded-2xl bg-white border border-slate-200 overflow-hidden shadow-sm">
+          <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm font-bold text-[#145f96]">
+              <CreditCard className="w-4 h-4" />
+              <span>Créditos Activos</span>
+            </div>
+            <span className="text-xs font-semibold text-slate-500">
+              {activeCredits.length} activo(s)
+            </span>
+          </div>
+
+          <div className="divide-y divide-slate-200/70 akrobit-zebra-rows">
+            {activeCredits.map((credit, idx) => {
+              const live = liveStatusByCreditId.get(credit.id);
+              const days = live ? live.daysElapsed : 0;
+              const tier = getPortalAgingTier(days);
+              const dayColor =
+                tier === 'red'
+                  ? 'text-[#d12925]'
+                  : tier === 'orange'
+                    ? 'text-[#df7729]'
+                    : 'text-[#4d7c0f]';
+              const underlineCls =
+                days >= 30
+                  ? 'shadow-[inset_0_-2px_0_0_#d12925]'
+                  : days >= 25
+                    ? 'shadow-[inset_0_-2px_0_0_#df7729]'
+                    : '';
+
+              return (
+                <div
+                  key={credit.id}
+                  className={`px-4 py-3 flex items-center justify-between gap-3 ${underlineCls}`}
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-[#145f96]">
+                      Credit Cash N°{idx + 1}{' '}
+                      <span className={`text-xs font-bold ${dayColor}`}>
+                        · {days} día{days === 1 ? '' : 's'}
+                      </span>
+                    </p>
+                    <p className="text-xs text-slate-500 truncate">
+                      Cap. pendiente: {formatCurrency(live?.baseBalance ?? credit.currentBalance, credit.currency)} ({credit.interestRate}%)
+                      {(live?.accruedInterest ?? 0) > 0 &&
+                        ` · Int. al día: +${formatCurrency(live!.accruedInterest, credit.currency)}`}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0 flex items-center gap-2.5">
+                    <div>
+                      <span className="text-[11px] text-slate-500 block">Total hoy</span>
+                      <span className="text-sm font-mono font-bold text-slate-900 tabular-nums">
+                        {formatCurrency(live?.totalDueToday ?? credit.currentBalance, credit.currency)}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setErrorMessage('');
+                        setStatusMessage('');
+                        setSelectedCreditId(credit.id);
+                        setAction('register_payment');
+                      }}
+                      className="min-h-[36px] px-2.5 rounded-lg bg-[#df7729]/15 hover:bg-[#df7729]/25 text-[#df7729] text-xs font-bold cursor-pointer whitespace-nowrap"
+                    >
+                      Abonar
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Client History Ledger */}
       <div className="rounded-2xl bg-white border border-slate-200 p-4 space-y-3">
         <div className="flex items-center justify-between">
@@ -1378,31 +1701,38 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
               </button>
 
               <div className="rounded-xl border border-slate-200 divide-y divide-slate-200/70 overflow-hidden akrobit-zebra-rows">
-                {activeCredits.map((credit, idx) => (
-                  <button
-                    key={credit.id}
-                    type="button"
-                    onClick={() => {
-                      setWhatsappPickOpen(false);
-                      onTriggerInvoice(buildCreditInvoicePayload(credit, idx));
-                    }}
-                    className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left hover:bg-[#69b8e9]/20 transition-colors cursor-pointer"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm font-bold text-[#145f96]">Credit Cash N°{idx + 1}</p>
-                      <p className="text-xs text-slate-500 truncate">
-                        {formatDateTime(credit.createdAt)} · Cap:{' '}
-                        {formatCurrency(credit.principal, credit.currency)} ({credit.interestRate}%)
-                      </p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-sm font-mono font-bold text-slate-900 tabular-nums">
-                        {formatCurrency(credit.currentBalance, credit.currency)}
-                      </p>
-                      <span className="text-[11px] font-bold text-[#15803d]">Enviar</span>
-                    </div>
-                  </button>
-                ))}
+                {activeCredits.map((credit, idx) => {
+                  const live = liveStatusByCreditId.get(credit.id);
+                  const dueToday = live ? live.totalDueToday : credit.currentBalance;
+                  const days = live ? live.daysElapsed : 0;
+                  return (
+                    <button
+                      key={credit.id}
+                      type="button"
+                      onClick={() => {
+                        setWhatsappPickOpen(false);
+                        onTriggerInvoice(buildCreditInvoicePayload(credit, idx));
+                      }}
+                      className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left hover:bg-[#69b8e9]/20 transition-colors cursor-pointer"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-[#145f96]">
+                          Credit Cash N°{idx + 1} · {days}d
+                        </p>
+                        <p className="text-xs text-slate-500 truncate">
+                          {formatDateTime(credit.createdAt)} · Cap:{' '}
+                          {formatCurrency(credit.currentBalance, credit.currency)} ({credit.interestRate}%)
+                        </p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-mono font-bold text-slate-900 tabular-nums">
+                          {formatCurrency(dueToday, credit.currency)}
+                        </p>
+                        <span className="text-[11px] font-bold text-[#15803d]">Enviar</span>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
