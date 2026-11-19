@@ -1,0 +1,6 @@
+{
+  "name": "Akrobit",
+  "description": "Plataforma corporativa Akrobit para gestión de créditos, pagos sobre saldo, facturación por WhatsApp y control operativo online y offline.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

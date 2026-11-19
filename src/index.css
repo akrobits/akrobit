@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-sans: "DM Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-signature: "Playfair Display", Georgia, serif;
+
+  --color-akrobit-blue: #145f96;
+  --color-akrobit-blue-dark: #0e4670;
+  --color-akrobit-green: #a1d63e;
+  --color-akrobit-orange: #df7729;
+  --color-akrobit-cyan: #69b8e9;
+  --color-akrobit-red: #d12925;
+}
+
+@layer base {
+  html,
+  body {
+    font-family: var(--font-sans);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Excel-style alternating low-tone sky-blue shading for all client & contact lists */
+@layer components {
+  .akrobit-zebra-rows > :nth-child(odd) {
+    background-color: #ffffff;
+  }
+
+  .akrobit-zebra-rows > :nth-child(even) {
+    background-color: rgba(105, 184, 233, 0.13);
+  }
+}
+

@@ -1,0 +1,433 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny all by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Helpers ---
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerified() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidPortalKey(key) {
+      return key is string && key.size() == 64 && key.matches('^[a-f0-9]{64}$');
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email == 'akrobits@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerified() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isActiveMember() {
+      return isAdmin() || (
+        isVerified() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true
+      );
+    }
+
+    // --- Validation Blueprints ---
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'role', 'active', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && data.role is string && (data.role == 'admin' || data.role == 'employee')
+        && data.active is bool;
+    }
+
+    function isValidUserPrivateInfo(data) {
+      return data.keys().hasAll(['email', 'updatedAt'])
+        && data.keys().hasOnly(['email', 'updatedAt'])
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160;
+    }
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'grantedBy', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'grantedBy', 'createdAt'])
+        && isValidId(data.uid)
+        && isValidId(data.grantedBy);
+    }
+
+    function isValidClient(data) {
+      return data.keys().hasAll(['id', 'name', 'phone', 'orgId', 'createdBy', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'phone', 'notes', 'portalCode', 'portalKey', 'orgId', 'createdBy', 'active', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 32
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 300))
+        && (!('portalCode' in data) || (data.portalCode is string && data.portalCode.size() == 6 && data.portalCode.matches('^[0-9]{6}$')))
+        && (!('portalKey' in data) || isValidPortalKey(data.portalKey))
+        && data.orgId == 'akrobit'
+        && isValidId(data.createdBy)
+        && data.active is bool;
+    }
+
+    function isValidCredit(data) {
+      return data.keys().hasAll([
+          'id', 'clientId', 'clientName', 'currency', 'principal',
+          'interestRate', 'initialTotal', 'currentBalance', 'status',
+          'orgId', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'clientId', 'clientName', 'currency', 'principal',
+          'interestRate', 'initialTotal', 'currentBalance', 'status',
+          'orgId', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.clientId)
+        && data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 120
+        && data.currency is string && (data.currency == 'NIO' || data.currency == 'USD')
+        && data.principal is number && data.principal > 0 && data.principal <= 100000000
+        && data.interestRate is number && data.interestRate >= 5 && data.interestRate <= 10
+        && data.initialTotal is number && data.initialTotal > 0 && data.initialTotal <= 200000000
+        && data.currentBalance is number && data.currentBalance >= 0 && data.currentBalance <= 200000000
+        && data.status is string && (data.status == 'active' || data.status == 'settled')
+        && data.orgId == 'akrobit'
+        && isValidId(data.createdBy)
+        && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 80;
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll([
+          'id', 'creditId', 'clientId', 'type', 'currency',
+          'amount', 'interestRate', 'previousBalance', 'newBalance',
+          'orgId', 'createdBy', 'createdByName', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'creditId', 'clientId', 'type', 'currency',
+          'amount', 'interestRate', 'previousBalance', 'newBalance',
+          'note', 'orgId', 'createdBy', 'createdByName', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.creditId)
+        && isValidId(data.clientId)
+        && data.type is string && (data.type == 'credit' || data.type == 'payment' || data.type == 'adjustment')
+        && data.currency is string && (data.currency == 'NIO' || data.currency == 'USD')
+        && data.amount is number && data.amount >= 0 && data.amount <= 200000000
+        && data.interestRate is number && data.interestRate >= 5 && data.interestRate <= 10
+        && data.previousBalance is number && data.previousBalance >= 0 && data.previousBalance <= 200000000
+        && data.newBalance is number && data.newBalance >= 0 && data.newBalance <= 200000000
+        && (!('note' in data) || (data.note is string && data.note.size() <= 240))
+        && data.orgId == 'akrobit'
+        && isValidId(data.createdBy)
+        && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 80;
+    }
+
+    function isValidModificationRequest(data) {
+      return data.keys().hasAll([
+          'id', 'targetType', 'creditId', 'clientId', 'clientName',
+          'currency', 'oldValue', 'newValue', 'oldInterestRate', 'newInterestRate',
+          'reason', 'status', 'orgId', 'requestedBy', 'requestedByName',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'targetType', 'creditId', 'transactionId', 'clientId', 'clientName',
+          'currency', 'oldValue', 'newValue', 'oldInterestRate', 'newInterestRate',
+          'reason', 'status', 'orgId', 'requestedBy', 'requestedByName',
+          'reviewedBy', 'reviewedByName', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.targetType is string && (data.targetType == 'credit' || data.targetType == 'transaction')
+        && isValidId(data.creditId)
+        && (!('transactionId' in data) || data.transactionId == '' || isValidId(data.transactionId))
+        && isValidId(data.clientId)
+        && data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 120
+        && data.currency is string && (data.currency == 'NIO' || data.currency == 'USD')
+        && data.oldValue is number && data.oldValue >= 0 && data.oldValue <= 200000000
+        && data.newValue is number && data.newValue >= 0 && data.newValue <= 200000000
+        && data.oldInterestRate is number && data.oldInterestRate >= 5 && data.oldInterestRate <= 10
+        && data.newInterestRate is number && data.newInterestRate >= 5 && data.newInterestRate <= 10
+        && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 240
+        && data.status is string && (
+          data.status == 'pending' ||
+          data.status == 'approved' ||
+          data.status == 'rejected' ||
+          data.status == 'corrected'
+        )
+        && data.orgId == 'akrobit'
+        && isValidId(data.requestedBy)
+        && data.requestedByName is string && data.requestedByName.size() >= 1 && data.requestedByName.size() <= 80
+        && (!('reviewedBy' in data) || data.reviewedBy == '' || isValidId(data.reviewedBy))
+        && (!('reviewedByName' in data) || (data.reviewedByName is string && data.reviewedByName.size() <= 80));
+    }
+
+    function isValidClientPortal(data) {
+      return data.keys().hasAll([
+          'id', 'clientId', 'clientName', 'orgId', 'totalNio', 'totalUsd',
+          'activeCredits', 'recentTransactions', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'clientId', 'clientName', 'orgId', 'totalNio', 'totalUsd',
+          'activeCredits', 'recentTransactions', 'updatedAt'
+        ])
+        && isValidPortalKey(data.id)
+        && isValidId(data.clientId)
+        && data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 120
+        && data.orgId == 'akrobit'
+        && data.totalNio is number && data.totalNio >= 0 && data.totalNio <= 400000000
+        && data.totalUsd is number && data.totalUsd >= 0 && data.totalUsd <= 400000000
+        && data.activeCredits is list && data.activeCredits.size() <= 50
+        && (
+          data.activeCredits.size() == 0 || (
+            data.activeCredits[0] is map &&
+            data.activeCredits[0].keys().hasAll(['label', 'currency', 'principal', 'interestRate', 'currentBalance', 'dateLabel']) &&
+            data.activeCredits[0].keys().hasOnly(['label', 'currency', 'principal', 'interestRate', 'currentBalance', 'dateLabel']) &&
+            data.activeCredits[0].label is string && data.activeCredits[0].label.size() <= 60 &&
+            data.activeCredits[0].currency is string && (data.activeCredits[0].currency == 'NIO' || data.activeCredits[0].currency == 'USD') &&
+            data.activeCredits[0].principal is number &&
+            data.activeCredits[0].interestRate is number &&
+            data.activeCredits[0].currentBalance is number &&
+            data.activeCredits[0].dateLabel is string && data.activeCredits[0].dateLabel.size() <= 60
+          )
+        )
+        && data.recentTransactions is list && data.recentTransactions.size() <= 100
+        && (
+          data.recentTransactions.size() == 0 || (
+            data.recentTransactions[0] is map &&
+            data.recentTransactions[0].keys().hasAll(['type', 'currency', 'amount', 'interestRate', 'previousBalance', 'newBalance', 'dateLabel']) &&
+            data.recentTransactions[0].keys().hasOnly(['type', 'currency', 'amount', 'interestRate', 'previousBalance', 'newBalance', 'note', 'dateLabel']) &&
+            data.recentTransactions[0].type is string && (data.recentTransactions[0].type == 'credit' || data.recentTransactions[0].type == 'payment' || data.recentTransactions[0].type == 'adjustment') &&
+            data.recentTransactions[0].currency is string && (data.recentTransactions[0].currency == 'NIO' || data.recentTransactions[0].currency == 'USD') &&
+            data.recentTransactions[0].amount is number &&
+            data.recentTransactions[0].interestRate is number &&
+            data.recentTransactions[0].previousBalance is number &&
+            data.recentTransactions[0].newBalance is number &&
+            (!('note' in data.recentTransactions[0]) || (data.recentTransactions[0].note is string && data.recentTransactions[0].note.size() <= 240)) &&
+            data.recentTransactions[0].dateLabel is string && data.recentTransactions[0].dateLabel.size() <= 60
+          )
+        );
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(userId)
+        && isValidUserProfile(incoming())
+        && isOwner(userId)
+        && incoming().uid == userId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (isBootstrappedAdmin() && incoming().role == 'admin') ||
+          (incoming().role == 'employee' && incoming().active == true)
+        );
+      allow update: if isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            isOwner(userId)
+            && incoming().role == existing().role
+            && incoming().active == existing().active
+            && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+        allow list: if isOwner(userId) || isBootstrappedAdmin();
+        allow create: if isValidId(userId) && isValidId(docId)
+          && isValidUserPrivateInfo(incoming())
+          && isOwner(userId)
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(docId)
+          && isValidUserPrivateInfo(incoming())
+          && (isOwner(userId) || isAdmin())
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+        allow delete: if isValidId(userId) && isValidId(docId) && isAdmin();
+      }
+    }
+
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(userId)
+        && isValidAdminRecord(incoming())
+        && isAdmin()
+        && incoming().uid == userId
+        && incoming().grantedBy == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isValidId(userId) && isBootstrappedAdmin();
+    }
+
+    match /clients/{clientId} {
+      allow get: if isValidId(clientId) && isActiveMember();
+      allow list: if isVerified() && existing().orgId == 'akrobit';
+      allow create: if isValidId(clientId)
+        && isValidClient(incoming())
+        && isActiveMember()
+        && incoming().id == clientId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(clientId)
+        && isValidClient(incoming())
+        && isActiveMember()
+        && incoming().id == existing().id
+        && incoming().orgId == existing().orgId
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'notes', 'active', 'portalCode', 'portalKey', 'updatedAt'])
+        );
+      allow delete: if isValidId(clientId) && isAdmin();
+    }
+
+    match /credits/{creditId} {
+      allow get: if isValidId(creditId) && isActiveMember();
+      allow list: if isVerified() && existing().orgId == 'akrobit';
+      allow create: if isValidId(creditId)
+        && isValidCredit(incoming())
+        && isActiveMember()
+        && incoming().id == creditId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/clients/$(incoming().clientId));
+      allow update: if isValidId(creditId)
+        && isValidCredit(incoming())
+        && isActiveMember()
+        && incoming().id == existing().id
+        && incoming().clientId == existing().clientId
+        && incoming().orgId == existing().orgId
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdByName == existing().createdByName
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            existing().status != 'settled'
+            && incoming().principal == existing().principal
+            && incoming().interestRate == existing().interestRate
+            && incoming().initialTotal == existing().initialTotal
+            && incoming().currency == existing().currency
+            && incoming().diff(existing()).affectedKeys().hasOnly(['currentBalance', 'status', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(creditId) && isAdmin();
+    }
+
+    match /transactions/{transactionId} {
+      allow get: if isValidId(transactionId) && isActiveMember();
+      allow list: if isVerified() && existing().orgId == 'akrobit';
+      allow create: if isValidId(transactionId)
+        && isValidTransaction(incoming())
+        && isActiveMember()
+        && incoming().id == transactionId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && exists(/databases/$(database)/documents/clients/$(incoming().clientId))
+        && (
+          exists(/databases/$(database)/documents/credits/$(incoming().creditId)) ||
+          existsAfter(/databases/$(database)/documents/credits/$(incoming().creditId))
+        );
+      allow update: if isValidId(transactionId)
+        && isValidTransaction(incoming())
+        && isAdmin()
+        && incoming().id == existing().id
+        && incoming().creditId == existing().creditId
+        && incoming().clientId == existing().clientId
+        && incoming().orgId == existing().orgId
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(transactionId) && isAdmin();
+    }
+
+    match /modificationRequests/{requestId} {
+      allow get: if isValidId(requestId) && isActiveMember();
+      allow list: if isVerified() && (isBootstrappedAdmin() || existing().requestedBy == request.auth.uid);
+      allow create: if isValidId(requestId)
+        && isValidModificationRequest(incoming())
+        && isActiveMember()
+        && incoming().id == requestId
+        && incoming().status == 'pending'
+        && incoming().requestedBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/credits/$(incoming().creditId))
+        && exists(/databases/$(database)/documents/clients/$(incoming().clientId));
+      allow update: if isValidId(requestId)
+        && isValidModificationRequest(incoming())
+        && isAdmin()
+        && existing().status == 'pending'
+        && incoming().id == existing().id
+        && incoming().creditId == existing().creditId
+        && incoming().clientId == existing().clientId
+        && incoming().orgId == existing().orgId
+        && incoming().requestedBy == existing().requestedBy
+        && incoming().requestedByName == existing().requestedByName
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'newValue', 'newInterestRate', 'reviewedBy', 'reviewedByName', 'updatedAt'
+        ]);
+      allow delete: if isValidId(requestId) && isAdmin();
+    }
+
+    match /clientPortals/{portalKey} {
+      allow get: if isValidPortalKey(portalKey);
+      allow list: if false;
+      allow create: if isValidPortalKey(portalKey)
+        && isValidClientPortal(incoming())
+        && isActiveMember()
+        && incoming().id == portalKey
+        && incoming().updatedAt == request.time
+        && (
+          exists(/databases/$(database)/documents/clients/$(incoming().clientId)) ||
+          existsAfter(/databases/$(database)/documents/clients/$(incoming().clientId))
+        );
+      allow update: if isValidPortalKey(portalKey)
+        && isValidClientPortal(incoming())
+        && isActiveMember()
+        && incoming().id == existing().id
+        && incoming().clientId == existing().clientId
+        && incoming().orgId == existing().orgId
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'clientName', 'totalNio', 'totalUsd', 'activeCredits', 'recentTransactions', 'updatedAt'
+        ]);
+      allow delete: if isValidPortalKey(portalKey) && isActiveMember();
+    }
+  }
+}

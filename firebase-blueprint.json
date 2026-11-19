@@ -1,0 +1,513 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Operational profile and role assignment for an Akrobit team member.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin", "employee"]
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "role", "active", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII document storing the user's email address.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted marker document designating an administrator UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "grantedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "grantedBy", "createdAt"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Customer registered in Credit Cash.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 32
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "orgId": {
+          "type": "string",
+          "enum": ["akrobit"]
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "portalCode": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[0-9]{6}$"
+        },
+        "portalKey": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "name", "phone", "orgId", "createdBy", "active", "createdAt", "updatedAt"]
+    },
+    "Credit": {
+      "title": "Credit",
+      "description": "Active or settled Credit Cash loan for a client in C$ or USD.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "clientName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["NIO", "USD"]
+        },
+        "principal": {
+          "type": "number"
+        },
+        "interestRate": {
+          "type": "number"
+        },
+        "initialTotal": {
+          "type": "number"
+        },
+        "currentBalance": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "settled"]
+        },
+        "orgId": {
+          "type": "string",
+          "enum": ["akrobit"]
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "clientId",
+        "clientName",
+        "currency",
+        "principal",
+        "interestRate",
+        "initialTotal",
+        "currentBalance",
+        "status",
+        "orgId",
+        "createdBy",
+        "createdByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CreditTransaction": {
+      "title": "CreditTransaction",
+      "description": "Ledger entry for credit issuance, payment on balance, or approved adjustment.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "creditId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["credit", "payment", "adjustment"]
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["NIO", "USD"]
+        },
+        "amount": {
+          "type": "number"
+        },
+        "interestRate": {
+          "type": "number"
+        },
+        "previousBalance": {
+          "type": "number"
+        },
+        "newBalance": {
+          "type": "number"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 240
+        },
+        "orgId": {
+          "type": "string",
+          "enum": ["akrobit"]
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "creditId",
+        "clientId",
+        "type",
+        "currency",
+        "amount",
+        "interestRate",
+        "previousBalance",
+        "newBalance",
+        "orgId",
+        "createdBy",
+        "createdByName",
+        "createdAt"
+      ]
+    },
+    "ModificationRequest": {
+      "title": "ModificationRequest",
+      "description": "Employee request to edit a credit or payment record requiring admin approval.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "targetType": {
+          "type": "string",
+          "enum": ["credit", "transaction"]
+        },
+        "creditId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "transactionId": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "clientName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["NIO", "USD"]
+        },
+        "oldValue": {
+          "type": "number"
+        },
+        "newValue": {
+          "type": "number"
+        },
+        "oldInterestRate": {
+          "type": "number"
+        },
+        "newInterestRate": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected", "corrected"]
+        },
+        "orgId": {
+          "type": "string",
+          "enum": ["akrobit"]
+        },
+        "requestedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "requestedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "reviewedBy": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "reviewedByName": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "targetType",
+        "creditId",
+        "clientId",
+        "clientName",
+        "currency",
+        "oldValue",
+        "newValue",
+        "oldInterestRate",
+        "newInterestRate",
+        "reason",
+        "status",
+        "orgId",
+        "requestedBy",
+        "requestedByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ClientPortal": {
+      "title": "ClientPortal",
+      "description": "Read-only customer statement snapshot keyed by cryptographic SHA-256 hash of normalized phone + 6-digit secret code.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "clientName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "orgId": {
+          "type": "string",
+          "enum": ["akrobit"]
+        },
+        "totalNio": {
+          "type": "number"
+        },
+        "totalUsd": {
+          "type": "number"
+        },
+        "activeCredits": {
+          "type": "array"
+        },
+        "recentTransactions": {
+          "type": "array"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "clientId",
+        "clientName",
+        "orgId",
+        "totalNio",
+        "totalUsd",
+        "activeCredits",
+        "recentTransactions",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Team member profile and RBAC role document."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Private PII document containing user email."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Admin role registry."
+    },
+    "/clients/{clientId}": {
+      "schema": { "$ref": "#/entities/Client" },
+      "description": "Credit Cash customer directory."
+    },
+    "/credits/{creditId}": {
+      "schema": { "$ref": "#/entities/Credit" },
+      "description": "Credit Cash active and settled loans."
+    },
+    "/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/CreditTransaction" },
+      "description": "Immutable ledger of credit issuances, balance payments, and approved corrections."
+    },
+    "/modificationRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/ModificationRequest" },
+      "description": "Real-time employee modification requests awaiting administrator approval."
+    },
+    "/clientPortals/{portalKey}": {
+      "schema": { "$ref": "#/entities/ClientPortal" },
+      "description": "Read-only statement portal snapshots accessed strictly by exact 64-char SHA-256 lookup key."
+    }
+  }
+}
