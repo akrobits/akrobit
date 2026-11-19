@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Archive,
   ArrowLeft,
   ChevronRight,
   Contact,
@@ -7,11 +8,21 @@ import {
   MoreVertical,
   Pencil,
   Search,
+  Snowflake,
   Trash2,
   UserPlus,
   X,
 } from 'lucide-react';
-import { doc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  getDocs,
+  query,
+  serverTimestamp,
+  where,
+  writeBatch,
+  type DocumentReference,
+} from 'firebase/firestore';
 import { ORG_ID, db } from '../lib/firebase';
 import {
   calculateLiveCreditStatus,
@@ -46,6 +57,7 @@ interface CreditCashModuleProps {
   currentUserId: string;
   currentUserName: string;
   isAdmin: boolean;
+  portfolioMode?: 'active' | 'castigada';
   incomingSharedContacts?: ContactCandidate[];
   onConsumeSharedContacts?: () => void;
   onBackToDashboard: () => void;
@@ -55,10 +67,14 @@ interface CreditCashModuleProps {
 type ModalMode = 'none' | 'add' | 'edit_pick' | 'edit_form' | 'delete_pick' | 'delete_confirm';
 
 async function commitWithOfflineGrace(promise: Promise<void>): Promise<void> {
-  const timeout = new Promise<void>((resolve) => {
-    setTimeout(resolve, 1200);
-  });
-  await Promise.race([promise, timeout]);
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    const timeout = new Promise<void>((resolve) => {
+      setTimeout(resolve, 1200);
+    });
+    await Promise.race([promise, timeout]);
+    return;
+  }
+  await promise;
 }
 
 export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
@@ -68,11 +84,13 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
   currentUserId,
   currentUserName,
   isAdmin,
+  portfolioMode = 'active',
   incomingSharedContacts = [],
   onConsumeSharedContacts,
   onBackToDashboard,
   onTriggerInvoice,
 }) => {
+  const isCastigadaView = portfolioMode === 'castigada';
   const [searchQuery, setSearchQuery] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -219,7 +237,21 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
   const activeClients = useMemo(
     () =>
       clients
-        .filter((c) => c.active !== false)
+        .filter(
+          (c) =>
+            c.active !== false &&
+            (isCastigadaView
+              ? c.portfolioStatus === 'castigada'
+              : c.portfolioStatus !== 'castigada')
+        )
+        .sort((a, b) => a.name.localeCompare(b.name, 'es')),
+    [clients, isCastigadaView]
+  );
+
+  const inactiveClients = useMemo(
+    () =>
+      clients
+        .filter((c) => c.active === false)
         .sort((a, b) => a.name.localeCompare(b.name, 'es')),
     [clients]
   );
@@ -263,8 +295,10 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
   });
 
   const clientBalances = useMemo(() => {
+    const activeClientIds = new Set(activeClients.map((c) => c.id));
     const txsByClient = new Map<string, CreditTransaction[]>();
     for (const tx of transactions) {
+      if (!activeClientIds.has(tx.clientId)) continue;
       const list = txsByClient.get(tx.clientId) || [];
       list.push(tx);
       txsByClient.set(tx.clientId, list);
@@ -272,6 +306,7 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
 
     const map = new Map<string, { nio: number; usd: number; maxDaysWithoutPayment: number }>();
     for (const cr of credits) {
+      if (!activeClientIds.has(cr.clientId)) continue;
       if (cr.status !== 'active' || cr.currentBalance <= 0) continue;
       const clientTxs = txsByClient.get(cr.clientId) || [];
       const live = calculateLiveCreditStatus(cr, clientTxs);
@@ -284,7 +319,7 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
       map.set(cr.clientId, cur);
     }
     return map;
-  }, [credits, transactions]);
+  }, [activeClients, credits, transactions]);
 
   const processPickedContact = async (rawName: string, rawTel: string, sourceLabel: string) => {
     const cleanName = rawName.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').trim();
@@ -459,20 +494,93 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
     setFormError('');
     setSaving(true);
     try {
-      const batch = writeBatch(db);
       if (isAdmin) {
-        batch.delete(doc(db, 'clients', targetClient.id));
+        const refsToDelete = new Map<string, DocumentReference>();
+
+        refsToDelete.set(`clients/${targetClient.id}`, doc(db, 'clients', targetClient.id));
+        const portalKeysToDelete = new Set<string>();
+        if (targetClient.portalKey) {
+          portalKeysToDelete.add(targetClient.portalKey);
+        }
+        if (targetClient.portalCode && targetClient.phone) {
+          try {
+            portalKeysToDelete.add(
+              await computePortalKey(targetClient.phone, targetClient.portalCode)
+            );
+          } catch {
+            // Ignore compute errors if phone format was legacy
+          }
+        }
+        for (const key of portalKeysToDelete) {
+          refsToDelete.set(`clientPortals/${key}`, doc(db, 'clientPortals', key));
+        }
+
+        for (const cr of credits) {
+          if (cr.clientId === targetClient.id) {
+            refsToDelete.set(`credits/${cr.id}`, doc(db, 'credits', cr.id));
+          }
+        }
+        for (const tx of transactions) {
+          if (tx.clientId === targetClient.id) {
+            refsToDelete.set(`transactions/${tx.id}`, doc(db, 'transactions', tx.id));
+          }
+        }
+
+        if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+          const [creditSnap, txSnap, modSnap] = await Promise.all([
+            getDocs(
+              query(
+                collection(db, 'credits'),
+                where('orgId', '==', ORG_ID),
+                where('clientId', '==', targetClient.id)
+              )
+            ),
+            getDocs(
+              query(
+                collection(db, 'transactions'),
+                where('orgId', '==', ORG_ID),
+                where('clientId', '==', targetClient.id)
+              )
+            ),
+            getDocs(
+              query(
+                collection(db, 'modificationRequests'),
+                where('orgId', '==', ORG_ID),
+                where('clientId', '==', targetClient.id)
+              )
+            ),
+          ]);
+          creditSnap.forEach((d) =>
+            refsToDelete.set(`credits/${d.id}`, doc(db, 'credits', d.id))
+          );
+          txSnap.forEach((d) =>
+            refsToDelete.set(`transactions/${d.id}`, doc(db, 'transactions', d.id))
+          );
+          modSnap.forEach((d) =>
+            refsToDelete.set(`modificationRequests/${d.id}`, doc(db, 'modificationRequests', d.id))
+          );
+        }
+
+        const allRefs = Array.from(refsToDelete.values());
+        for (let i = 0; i < allRefs.length; i += 400) {
+          const batch = writeBatch(db);
+          for (const ref of allRefs.slice(i, i + 400)) {
+            batch.delete(ref);
+          }
+          await commitWithOfflineGrace(batch.commit());
+        }
       } else {
+        const batch = writeBatch(db);
         batch.update(doc(db, 'clients', targetClient.id), {
           active: false,
           updatedAt: serverTimestamp(),
         });
-      }
-      if (targetClient.portalKey) {
-        batch.delete(doc(db, 'clientPortals', targetClient.portalKey));
+        if (targetClient.portalKey) {
+          batch.delete(doc(db, 'clientPortals', targetClient.portalKey));
+        }
+        await commitWithOfflineGrace(batch.commit());
       }
 
-      await commitWithOfflineGrace(batch.commit());
       if (selectedClientId === targetClient.id) setSelectedClientId(null);
       setModalMode('none');
       setTargetClient(null);
@@ -506,6 +614,26 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
 
   return (
     <div className="mx-auto max-w-4xl px-3 sm:px-6 py-4 space-y-4">
+      {isCastigadaView && (
+        <div className="rounded-2xl bg-[#1e293b] text-white px-4 py-3 flex items-center justify-between gap-3 border-b-2 border-[#d12925] shadow-sm">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-[#d12925] flex items-center justify-center shrink-0">
+              <Archive className="w-4 h-4 text-white" />
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-sm font-bold truncate">Cartera Castigada</h2>
+              <p className="text-[11px] text-slate-300 truncate">
+                Cuentas congeladas (90+ días) · No generan intereses adicionales
+              </p>
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-[#69b8e9] shrink-0">
+            <Snowflake className="w-3.5 h-3.5" />
+            <span>{activeClients.length}</span>
+          </span>
+        </div>
+      )}
+
       {/* Top Internal Bar: Back + Search Input + 3-dot Menu (Agregar / Editar / Eliminar Clientes) */}
       <div className="flex items-center gap-2">
         <button
@@ -523,12 +651,16 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
             type="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Buscar cliente en Credit Cash..."
+            placeholder={
+              isCastigadaView
+                ? 'Buscar cliente en Cartera Castigada...'
+                : 'Buscar cliente en Credit Cash...'
+            }
             className="w-full min-h-[46px] rounded-xl bg-white border-2 border-[#145f96]/20 pl-10 pr-4 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#69b8e9] focus:outline-none shadow-sm"
           />
         </div>
 
-        {/* Top-Right 3-dot menu ONLY containing Agregar Clientes, Editar Clientes, Eliminar Clientes */}
+        {/* Top-Right 3-dot menu */}
         <div className="relative shrink-0">
           <button
             type="button"
@@ -547,14 +679,16 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
                 aria-hidden="true"
               />
               <div className="absolute right-0 mt-1.5 w-56 rounded-xl bg-white border border-slate-200 shadow-xl py-1.5 z-20">
-                <button
-                  type="button"
-                  onClick={openAddClient}
-                  className="w-full px-4 py-3 text-left text-sm font-semibold text-slate-800 hover:bg-[#a1d63e]/15 flex items-center gap-2.5 cursor-pointer"
-                >
-                  <UserPlus className="w-4 h-4 text-[#4d7c0f]" />
-                  <span>Agregar Clientes</span>
-                </button>
+                {!isCastigadaView && (
+                  <button
+                    type="button"
+                    onClick={openAddClient}
+                    className="w-full px-4 py-3 text-left text-sm font-semibold text-slate-800 hover:bg-[#a1d63e]/15 flex items-center gap-2.5 cursor-pointer"
+                  >
+                    <UserPlus className="w-4 h-4 text-[#4d7c0f]" />
+                    <span>Agregar Clientes</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -612,7 +746,9 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
       {activeClients.length === 0 ? (
         <div className="py-12 text-center">
           <p className="text-xs text-slate-400">
-            Sin clientes registrados. Usa el menú (⋮) para agregar.
+            {isCastigadaView
+              ? 'Sin clientes en Cartera Castigada. Solo el administrador puede trasladar cuentas con 90+ días sin abono.'
+              : 'Sin clientes registrados. Usa el menú (⋮) para agregar.'}
           </p>
         </div>
       ) : filteredClients.length === 0 ? (
@@ -628,19 +764,22 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
               maxDaysWithoutPayment: 0,
             };
             const hasDebt = bal.nio > 0 || bal.usd > 0;
-            const overdueTier = hasDebt
-              ? getModuleOverdueTier(bal.maxDaysWithoutPayment)
-              : 'normal';
+            const overdueTier =
+              hasDebt && !isCastigadaView
+                ? getModuleOverdueTier(bal.maxDaysWithoutPayment)
+                : 'normal';
 
-            const rowUnderlineCls =
-              overdueTier === 'red'
+            const rowUnderlineCls = isCastigadaView
+              ? 'shadow-[inset_0_-3px_0_0_#d12925]'
+              : overdueTier === 'red'
                 ? 'shadow-[inset_0_-3px_0_0_#d12925]'
                 : overdueTier === 'orange'
                   ? 'shadow-[inset_0_-3px_0_0_#df7729]'
                   : '';
 
-            const nameUnderlineCls =
-              overdueTier === 'red'
+            const nameUnderlineCls = isCastigadaView
+              ? ''
+              : overdueTier === 'red'
                 ? 'underline decoration-[#d12925] decoration-2 underline-offset-4'
                 : overdueTier === 'orange'
                   ? 'underline decoration-[#df7729] decoration-2 underline-offset-4'
@@ -659,13 +798,19 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
                   </p>
                   <p className="text-xs text-slate-500 font-mono truncate">
                     {client.phone}
-                    {overdueTier === 'red' && (
+                    {isCastigadaView && hasDebt && (
+                      <span className="font-sans font-bold text-[#d12925]">
+                        {' '}
+                        · Congelado ({bal.maxDaysWithoutPayment}d)
+                      </span>
+                    )}
+                    {!isCastigadaView && overdueTier === 'red' && (
                       <span className="font-sans font-bold text-[#d12925]">
                         {' '}
                         · {bal.maxDaysWithoutPayment} días sin abono
                       </span>
                     )}
-                    {overdueTier === 'orange' && (
+                    {!isCastigadaView && overdueTier === 'orange' && (
                       <span className="font-sans font-bold text-[#df7729]">
                         {' '}
                         · {bal.maxDaysWithoutPayment} días sin abono
@@ -812,40 +957,67 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
             </div>
 
             <div className="overflow-y-auto divide-y divide-slate-200/70 akrobit-zebra-rows">
-              {activeClients.length === 0 ? (
+              {activeClients.length === 0 && (!isAdmin || modalMode !== 'delete_pick' || inactiveClients.length === 0) ? (
                 <p className="text-sm text-slate-500 text-center py-8">
                   No hay clientes registrados aún.
                 </p>
               ) : (
-                activeClients.map((client) => (
-                  <button
-                    key={client.id}
-                    type="button"
-                    onClick={() => {
-                      setTargetClient(client);
-                      setFormError('');
-                      if (modalMode === 'edit_pick') {
-                        setFormName(client.name);
-                        setFormPhone(client.phone);
-                        setFormNotes(client.notes || '');
-                        setModalMode('edit_form');
-                      } else {
-                        setModalMode('delete_confirm');
-                      }
-                    }}
-                    className="w-full py-3.5 px-4 flex items-center justify-between text-left hover:bg-[#69b8e9]/20 transition-colors cursor-pointer"
-                  >
-                    <div>
-                      <p className="text-sm font-bold text-slate-900">{client.name}</p>
-                      <p className="text-xs text-slate-500 font-mono">{client.phone}</p>
-                    </div>
-                    {modalMode === 'edit_pick' ? (
-                      <Pencil className="w-4 h-4 text-[#145f96]" />
-                    ) : (
-                      <Trash2 className="w-4 h-4 text-[#d12925]" />
-                    )}
-                  </button>
-                ))
+                <>
+                  {activeClients.map((client) => (
+                    <button
+                      key={client.id}
+                      type="button"
+                      onClick={() => {
+                        setTargetClient(client);
+                        setFormError('');
+                        if (modalMode === 'edit_pick') {
+                          setFormName(client.name);
+                          setFormPhone(client.phone);
+                          setFormNotes(client.notes || '');
+                          setModalMode('edit_form');
+                        } else {
+                          setModalMode('delete_confirm');
+                        }
+                      }}
+                      className="w-full py-3.5 px-4 flex items-center justify-between text-left hover:bg-[#69b8e9]/20 transition-colors cursor-pointer"
+                    >
+                      <div>
+                        <p className="text-sm font-bold text-slate-900">{client.name}</p>
+                        <p className="text-xs text-slate-500 font-mono">{client.phone}</p>
+                      </div>
+                      {modalMode === 'edit_pick' ? (
+                        <Pencil className="w-4 h-4 text-[#145f96]" />
+                      ) : (
+                        <Trash2 className="w-4 h-4 text-[#d12925]" />
+                      )}
+                    </button>
+                  ))}
+                  {isAdmin && modalMode === 'delete_pick' && inactiveClients.length > 0 && (
+                    <>
+                      <div className="px-4 py-2 bg-slate-100 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        Desactivados (pendientes de borrado de raíz)
+                      </div>
+                      {inactiveClients.map((client) => (
+                        <button
+                          key={client.id}
+                          type="button"
+                          onClick={() => {
+                            setTargetClient(client);
+                            setFormError('');
+                            setModalMode('delete_confirm');
+                          }}
+                          className="w-full py-3.5 px-4 flex items-center justify-between text-left hover:bg-[#d12925]/10 transition-colors cursor-pointer"
+                        >
+                          <div>
+                            <p className="text-sm font-bold text-slate-700">{client.name}</p>
+                            <p className="text-xs text-slate-500 font-mono">{client.phone}</p>
+                          </div>
+                          <Trash2 className="w-4 h-4 text-[#d12925]" />
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -924,9 +1096,22 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
       {modalMode === 'delete_confirm' && targetClient && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl border border-slate-200 p-5 space-y-4">
-            <h3 className="text-base font-bold text-[#d12925]">¿Eliminar cliente?</h3>
-            <p className="text-sm text-slate-600">
-              Se quitará a <strong>{targetClient.name}</strong> de la lista activa de Credit Cash.
+            <h3 className="text-base font-bold text-[#d12925]">
+              {isAdmin ? '¿Eliminar cliente de raíz?' : '¿Desactivar cliente?'}
+            </h3>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              {isAdmin ? (
+                <>
+                  Se borrará por completo a <strong>{targetClient.name}</strong> junto con todos
+                  sus créditos, abonos, historial, solicitudes y acceso al portal. Si se vuelve a
+                  registrar luego, iniciará desde cero en <strong>Credit Cash N°1</strong>.
+                </>
+              ) : (
+                <>
+                  Se quitará a <strong>{targetClient.name}</strong> de la lista activa de Credit
+                  Cash.
+                </>
+              )}
             </p>
             {formError && (
               <p className="text-xs font-semibold text-[#d12925] bg-[#d12925]/10 rounded-xl px-3 py-2">
@@ -947,7 +1132,7 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
                 onClick={handleDeleteClient}
                 className="flex-1 min-h-[44px] rounded-xl bg-[#d12925] text-white text-sm font-bold cursor-pointer"
               >
-                {saving ? 'Eliminando...' : 'Eliminar'}
+                {saving ? 'Eliminando...' : isAdmin ? 'Eliminar de raíz' : 'Eliminar'}
               </button>
             </div>
           </div>

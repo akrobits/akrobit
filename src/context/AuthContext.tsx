@@ -19,6 +19,7 @@ import {
   db,
   handleFirestoreError,
 } from '../lib/firebase';
+import { formatActorName } from '../lib/finance';
 import type { UserProfile, UserRole } from '../types';
 
 interface AuthContextValue {
@@ -88,12 +89,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const userSnap = await getDoc(userRef);
       if (userSnap.exists()) {
         const data = userSnap.data() as UserProfile;
-        if (isBootstrapped && (data.role !== 'admin' || data.active !== true)) {
+        const normalizedExistingName = formatActorName(data.displayName).slice(0, 80);
+        const needsBootstrapFix =
+          isBootstrapped && (data.role !== 'admin' || data.active !== true);
+        const needsNameFix =
+          isBootstrapped && data.displayName.trim().toLowerCase() === 'akrobits';
+
+        if (needsBootstrapFix) {
           await setDoc(
             userRef,
             {
               uid: currentUser.uid,
-              displayName: (currentUser.displayName || data.displayName || 'Administrador').slice(0, 80),
+              displayName: formatActorName(
+                currentUser.displayName || normalizedExistingName || 'Akrobit'
+              ).slice(0, 80),
               role: 'admin',
               active: true,
               createdAt: data.createdAt || serverTimestamp(),
@@ -101,19 +110,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             },
             { merge: false }
           );
-          setProfile({ ...data, role: 'admin', active: true });
+          setProfile({
+            ...data,
+            displayName: formatActorName(
+              currentUser.displayName || normalizedExistingName || 'Akrobit'
+            ).slice(0, 80),
+            role: 'admin',
+            active: true,
+          });
+        } else if (needsNameFix) {
+          await updateDoc(userRef, {
+            displayName: 'Akrobit',
+            updatedAt: serverTimestamp(),
+          });
+          setProfile({ ...data, displayName: 'Akrobit' });
         } else {
-          setProfile(data);
+          setProfile({ ...data, displayName: normalizedExistingName });
           if (data.role === 'admin' && data.active !== false) {
             adminFlag = true;
           }
         }
       } else {
-        const initialName = (
+        const rawFallback =
           currentUser.displayName ||
           currentUser.email?.split('@')[0] ||
-          (isBootstrapped ? 'Administrador Akrobit' : 'Colaborador Akrobit')
-        ).slice(0, 80);
+          (isBootstrapped ? 'Akrobit' : 'Colaborador Akrobit');
+        const initialName = formatActorName(rawFallback).slice(0, 80);
 
         const newProfile: UserProfile = {
           uid: currentUser.uid,
@@ -136,7 +158,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (error instanceof Error && error.message.toLowerCase().includes('offline')) {
         setProfile({
           uid: currentUser.uid,
-          displayName: currentUser.displayName || 'Usuario Akrobit',
+          displayName: formatActorName(currentUser.displayName || 'Akrobit'),
           role: adminFlag ? 'admin' : 'employee',
           active: isBootstrapped || adminFlag,
         });

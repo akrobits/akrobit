@@ -133,6 +133,30 @@
           "maxLength": 64,
           "pattern": "^[a-f0-9]{64}$"
         },
+        "portfolioStatus": {
+          "type": "string",
+          "enum": ["active", "castigada"]
+        },
+        "sourceModule": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "castigadaAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "castigadaBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "castigadaByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -191,6 +215,16 @@
           "enum": ["prorated_daily", "pre_added"]
         },
         "lastPaymentAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "frozenDays": {
+          "type": "number"
+        },
+        "frozenAccruedInterest": {
+          "type": "number"
+        },
+        "frozenAt": {
           "type": "string",
           "format": "date-time"
         },
@@ -472,6 +506,10 @@
         },
         "recentTransactions": {
           "type": "array"
+        },
+        "portfolioStatus": {
+          "type": "string",
+          "enum": ["active", "castigada"]
         },
         "updatedAt": {
           "type": "string",

@@ -81,13 +81,21 @@ service cloud.firestore {
 
     function isValidClient(data) {
       return data.keys().hasAll(['id', 'name', 'phone', 'orgId', 'createdBy', 'active', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'name', 'phone', 'notes', 'portalCode', 'portalKey', 'orgId', 'createdBy', 'active', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'name', 'phone', 'notes', 'portalCode', 'portalKey',
+          'portfolioStatus', 'sourceModule', 'castigadaAt', 'castigadaBy', 'castigadaByName',
+          'orgId', 'createdBy', 'active', 'createdAt', 'updatedAt'
+        ])
         && isValidId(data.id)
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
         && data.phone is string && data.phone.size() >= 5 && data.phone.size() <= 32
         && (!('notes' in data) || (data.notes is string && data.notes.size() <= 300))
         && (!('portalCode' in data) || (data.portalCode is string && data.portalCode.size() == 6 && data.portalCode.matches('^[0-9]{6}$')))
         && (!('portalKey' in data) || isValidPortalKey(data.portalKey))
+        && (!('portfolioStatus' in data) || (data.portfolioStatus is string && (data.portfolioStatus == 'active' || data.portfolioStatus == 'castigada')))
+        && (!('sourceModule' in data) || (data.sourceModule is string && data.sourceModule.size() >= 1 && data.sourceModule.size() <= 60))
+        && (!('castigadaBy' in data) || isValidId(data.castigadaBy))
+        && (!('castigadaByName' in data) || (data.castigadaByName is string && data.castigadaByName.size() >= 1 && data.castigadaByName.size() <= 80))
         && data.orgId == 'akrobit'
         && isValidId(data.createdBy)
         && data.active is bool;
@@ -102,7 +110,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'clientId', 'clientName', 'currency', 'principal',
           'interestRate', 'initialTotal', 'currentBalance', 'status',
-          'interestMode', 'lastPaymentAt',
+          'interestMode', 'lastPaymentAt', 'frozenDays', 'frozenAccruedInterest', 'frozenAt',
           'orgId', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
@@ -115,6 +123,8 @@ service cloud.firestore {
         && data.currentBalance is number && data.currentBalance >= 0 && data.currentBalance <= 200000000
         && data.status is string && (data.status == 'active' || data.status == 'settled')
         && (!('interestMode' in data) || (data.interestMode is string && (data.interestMode == 'prorated_daily' || data.interestMode == 'pre_added')))
+        && (!('frozenDays' in data) || (data.frozenDays is number && data.frozenDays >= 0 && data.frozenDays <= 100000))
+        && (!('frozenAccruedInterest' in data) || (data.frozenAccruedInterest is number && data.frozenAccruedInterest >= 0 && data.frozenAccruedInterest <= 200000000))
         && data.orgId == 'akrobit'
         && isValidId(data.createdBy)
         && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 80;
@@ -191,7 +201,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'id', 'clientId', 'clientName', 'orgId', 'totalNio', 'totalUsd',
-          'activeCredits', 'recentTransactions', 'updatedAt'
+          'activeCredits', 'recentTransactions', 'portfolioStatus', 'updatedAt'
         ])
         && isValidPortalKey(data.id)
         && isValidId(data.clientId)
@@ -199,12 +209,13 @@ service cloud.firestore {
         && data.orgId == 'akrobit'
         && data.totalNio is number && data.totalNio >= 0 && data.totalNio <= 400000000
         && data.totalUsd is number && data.totalUsd >= 0 && data.totalUsd <= 400000000
+        && (!('portfolioStatus' in data) || (data.portfolioStatus is string && (data.portfolioStatus == 'active' || data.portfolioStatus == 'castigada')))
         && data.activeCredits is list && data.activeCredits.size() <= 50
         && (
           data.activeCredits.size() == 0 || (
             data.activeCredits[0] is map &&
             data.activeCredits[0].keys().hasAll(['label', 'currency', 'principal', 'interestRate', 'currentBalance', 'dateLabel']) &&
-            data.activeCredits[0].keys().hasOnly(['label', 'currency', 'principal', 'interestRate', 'currentBalance', 'dateLabel', 'lastActivityMs', 'interestMode', 'projected30DayInterest', 'projected30DayTotal']) &&
+            data.activeCredits[0].keys().hasOnly(['label', 'currency', 'principal', 'interestRate', 'currentBalance', 'dateLabel', 'lastActivityMs', 'interestMode', 'projected30DayInterest', 'projected30DayTotal', 'isFrozen', 'frozenDays', 'frozenAccruedInterest']) &&
             data.activeCredits[0].label is string && data.activeCredits[0].label.size() <= 60 &&
             data.activeCredits[0].currency is string && (data.activeCredits[0].currency == 'NIO' || data.activeCredits[0].currency == 'USD') &&
             data.activeCredits[0].principal is number &&
@@ -214,7 +225,10 @@ service cloud.firestore {
             (!('lastActivityMs' in data.activeCredits[0]) || data.activeCredits[0].lastActivityMs is number) &&
             (!('interestMode' in data.activeCredits[0]) || (data.activeCredits[0].interestMode is string && (data.activeCredits[0].interestMode == 'prorated_daily' || data.activeCredits[0].interestMode == 'pre_added'))) &&
             (!('projected30DayInterest' in data.activeCredits[0]) || data.activeCredits[0].projected30DayInterest is number) &&
-            (!('projected30DayTotal' in data.activeCredits[0]) || data.activeCredits[0].projected30DayTotal is number)
+            (!('projected30DayTotal' in data.activeCredits[0]) || data.activeCredits[0].projected30DayTotal is number) &&
+            (!('isFrozen' in data.activeCredits[0]) || data.activeCredits[0].isFrozen is bool) &&
+            (!('frozenDays' in data.activeCredits[0]) || data.activeCredits[0].frozenDays is number) &&
+            (!('frozenAccruedInterest' in data.activeCredits[0]) || data.activeCredits[0].frozenAccruedInterest is number)
           )
         )
         && data.recentTransactions is list && data.recentTransactions.size() <= 100
@@ -304,7 +318,8 @@ service cloud.firestore {
         && incoming().id == clientId
         && incoming().createdBy == request.auth.uid
         && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
+        && incoming().updatedAt == request.time
+        && (!('portfolioStatus' in incoming()) || incoming().portfolioStatus == 'active' || isAdmin());
       allow update: if isValidId(clientId)
         && isValidClient(incoming())
         && isActiveMember()
@@ -330,6 +345,7 @@ service cloud.firestore {
         && incoming().createdBy == request.auth.uid
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
+        && (isAdmin() || (!('frozenAt' in incoming()) && !('frozenDays' in incoming()) && !('frozenAccruedInterest' in incoming())))
         && exists(/databases/$(database)/documents/clients/$(incoming().clientId));
       allow update: if isValidId(creditId)
         && isValidCredit(incoming())
@@ -349,7 +365,8 @@ service cloud.firestore {
             && incoming().interestRate == existing().interestRate
             && incoming().initialTotal == existing().initialTotal
             && incoming().currency == existing().currency
-            && incoming().diff(existing()).affectedKeys().hasOnly(['currentBalance', 'status', 'lastPaymentAt', 'updatedAt'])
+            && (!('frozenAccruedInterest' in incoming()) || incoming().frozenAccruedInterest == 0 || ('frozenAccruedInterest' in existing() && incoming().frozenAccruedInterest == existing().frozenAccruedInterest))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['currentBalance', 'status', 'lastPaymentAt', 'frozenAccruedInterest', 'updatedAt'])
           )
         );
       allow delete: if isValidId(creditId) && isAdmin();
@@ -432,7 +449,7 @@ service cloud.firestore {
         && incoming().orgId == existing().orgId
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'clientName', 'totalNio', 'totalUsd', 'activeCredits', 'recentTransactions', 'updatedAt'
+          'clientName', 'totalNio', 'totalUsd', 'activeCredits', 'recentTransactions', 'portfolioStatus', 'updatedAt'
         ]);
       allow delete: if isValidPortalKey(portalKey) && isActiveMember();
     }

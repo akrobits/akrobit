@@ -202,27 +202,34 @@ export const ClientPortalPage: React.FC = () => {
     let maxDaysWithoutPayment = 0;
 
     const liveCredits = portal.activeCredits.map((cr) => {
-      const hasActivity = typeof cr.lastActivityMs === 'number' && cr.lastActivityMs > 0;
-      const daysElapsed = hasActivity
-        ? calculateCalendarDaysElapsed(cr.lastActivityMs!, nowMs)
-        : 0;
-
+      let daysElapsed = 0;
       let accruedInterest = 0;
-      if (hasActivity) {
-        if (cr.interestMode === 'prorated_daily') {
-          accruedInterest = calculateProratedInterestCeil(
-            cr.currentBalance,
-            cr.interestRate,
-            daysElapsed
-          );
-        } else {
-          const extraDays = Math.max(0, daysElapsed - 30);
-          if (extraDays > 0) {
+
+      if (cr.isFrozen) {
+        daysElapsed = Math.max(0, Math.round(cr.frozenDays ?? 0));
+        accruedInterest = round2(Math.max(0, cr.frozenAccruedInterest ?? 0));
+      } else {
+        const hasActivity = typeof cr.lastActivityMs === 'number' && cr.lastActivityMs > 0;
+        daysElapsed = hasActivity
+          ? calculateCalendarDaysElapsed(cr.lastActivityMs!, nowMs)
+          : 0;
+
+        if (hasActivity) {
+          if (cr.interestMode === 'prorated_daily') {
             accruedInterest = calculateProratedInterestCeil(
               cr.currentBalance,
               cr.interestRate,
-              extraDays
+              daysElapsed
             );
+          } else {
+            const extraDays = Math.max(0, daysElapsed - 30);
+            if (extraDays > 0) {
+              accruedInterest = calculateProratedInterestCeil(
+                cr.currentBalance,
+                cr.interestRate,
+                extraDays
+              );
+            }
           }
         }
       }
@@ -435,10 +442,26 @@ export const ClientPortalPage: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Corporate Aging Banner: Green (1-19d) | Orange (20-29d) | Red (30+d) */}
+                  {/* Corporate Aging Banner: Green (1-19d) | Orange (20-29d) | Red (30+d) | Frozen Castigada */}
                   {(() => {
                     const days = livePortalSummary.maxDaysWithoutPayment;
                     const tier = livePortalSummary.overallTier;
+
+                    if (portal.portfolioStatus === 'castigada') {
+                      return (
+                        <div className="rounded-xl bg-[#d12925] px-4 py-3 flex items-start gap-2.5 shadow-sm">
+                          <AlertTriangle className="w-5 h-5 text-white shrink-0 mt-0.5" />
+                          <div className="text-xs leading-snug text-white">
+                            <p className="font-bold text-sm">
+                              Cuenta en Cartera Castigada · Saldo congelado
+                            </p>
+                            <p className="text-white/90 mt-0.5">
+                              El saldo quedó fijado con {days} días sin abono y no genera intereses diarios adicionales.
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    }
 
                     if (tier === 'red') {
                       return (
@@ -525,9 +548,11 @@ export const ClientPortalPage: React.FC = () => {
                             <div className="flex items-center gap-2 flex-wrap">
                               <p className="text-sm font-bold text-[#145f96]">{cr.label}</p>
                               <span className={`text-xs font-bold ${tierTextCls}`}>
-                                {cr.daysElapsed >= 30
-                                  ? `· ${cr.daysElapsed} días sin abono o pago`
-                                  : `· ${cr.daysElapsed} día${cr.daysElapsed === 1 ? '' : 's'}`}
+                                {cr.isFrozen
+                                  ? `· Congelado (${cr.daysElapsed}d)`
+                                  : cr.daysElapsed >= 30
+                                    ? `· ${cr.daysElapsed} días sin abono o pago`
+                                    : `· ${cr.daysElapsed} día${cr.daysElapsed === 1 ? '' : 's'}`}
                               </span>
                             </div>
                             <p className="text-xs text-slate-500">
@@ -537,7 +562,7 @@ export const ClientPortalPage: React.FC = () => {
 
                           <div className="text-right shrink-0">
                             <span className="text-[11px] text-slate-500 block">
-                              Total al día de hoy
+                              {cr.isFrozen ? 'Saldo congelado' : 'Total al día de hoy'}
                             </span>
                             <span className="text-sm font-mono font-bold text-slate-900 tabular-nums">
                               {formatCurrency(cr.totalDueToday, cr.currency)}
@@ -554,13 +579,15 @@ export const ClientPortalPage: React.FC = () => {
                           </div>
                           <div>
                             <span className="text-slate-500 block">
-                              Interés al día ({cr.daysElapsed}d)
+                              {cr.isFrozen
+                                ? `Interés congelado (${cr.daysElapsed}d)`
+                                : `Interés al día (${cr.daysElapsed}d)`}
                             </span>
                             <span className={`font-mono font-bold tabular-nums ${tierTextCls}`}>
                               + {formatCurrency(cr.accruedInterest, cr.currency)}
                             </span>
                           </div>
-                          {cr.interestMode === 'prorated_daily' && cr.projected30DayTotal ? (
+                          {!cr.isFrozen && cr.interestMode === 'prorated_daily' && cr.projected30DayTotal ? (
                             <div className="col-span-2 sm:col-span-1">
                               <span className="text-slate-500 block">Ref. a 30 días</span>
                               <span className="font-mono font-semibold text-[#145f96] tabular-nums">

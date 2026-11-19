@@ -16,6 +16,7 @@ import type {
   ClientPortalSnapshot,
   Credit,
   CreditTransaction,
+  PortfolioStatus,
   PortalCreditItem,
   PortalTransactionItem,
 } from '../types';
@@ -149,11 +150,20 @@ export function buildClientPortalPayload(
   clientId: string,
   clientName: string,
   credits: Credit[],
-  transactions: CreditTransaction[]
+  transactions: CreditTransaction[],
+  portfolioStatus: PortfolioStatus = 'active'
 ): ClientPortalSnapshot {
-  const activeSorted = credits
-    .filter((c) => c.clientId === clientId && c.status === 'active' && c.currentBalance > 0)
-    .sort((a, b) => getTimestampMillis(a.createdAt) - getTimestampMillis(b.createdAt))
+  const allClientCreditsSorted = credits
+    .filter((c) => c.clientId === clientId)
+    .sort((a, b) => getTimestampMillis(a.createdAt) - getTimestampMillis(b.createdAt));
+
+  const creditLabelById = new Map<string, string>();
+  allClientCreditsSorted.forEach((cr, idx) => {
+    creditLabelById.set(cr.id, `Credit Cash N°${idx + 1}`);
+  });
+
+  const activeSorted = allClientCreditsSorted
+    .filter((c) => c.status === 'active' && c.currentBalance > 0)
     .slice(0, 50);
 
   let totalNio = 0;
@@ -164,7 +174,7 @@ export function buildClientPortalPayload(
     else totalUsd = round2(totalUsd + live.totalDueToday);
 
     return {
-      label: `Credit Cash N°${idx + 1}`.slice(0, 60),
+      label: (creditLabelById.get(c.id) || `Credit Cash N°${idx + 1}`).slice(0, 60),
       currency: c.currency,
       principal: round2(c.principal),
       interestRate: c.interestRate,
@@ -174,6 +184,13 @@ export function buildClientPortalPayload(
       interestMode: c.interestMode || 'pre_added',
       projected30DayInterest: live.projected30DayInterest,
       projected30DayTotal: live.projected30DayTotal,
+      ...(live.isFrozen
+        ? {
+            isFrozen: true,
+            frozenDays: live.daysElapsed,
+            frozenAccruedInterest: live.accruedInterest,
+          }
+        : {}),
     };
   });
 
@@ -205,6 +222,7 @@ export function buildClientPortalPayload(
     totalUsd: round2(Math.max(0, totalUsd)),
     activeCredits,
     recentTransactions,
+    portfolioStatus,
     updatedAt: serverTimestamp(),
   };
 }
@@ -215,14 +233,16 @@ export function attachPortalSnapshotToBatch(
   clientId: string,
   clientName: string,
   credits: Credit[],
-  transactions: CreditTransaction[]
+  transactions: CreditTransaction[],
+  portfolioStatus: PortfolioStatus = 'active'
 ): void {
   const payload = buildClientPortalPayload(
     portalKey,
     clientId,
     clientName,
     credits,
-    transactions
+    transactions,
+    portfolioStatus
   );
   batch.set(doc(db, 'clientPortals', portalKey), payload);
 }
@@ -284,7 +304,8 @@ export async function syncClientPortalFromServer(clientId: string): Promise<void
     client.id,
     client.name,
     credits,
-    transactions
+    transactions,
+    client.portfolioStatus || 'active'
   );
   await batch.commit();
 }
@@ -315,7 +336,8 @@ export async function regenerateClientPortalCredentials(
     client.id,
     client.name,
     clientCredits,
-    clientTransactions
+    clientTransactions,
+    client.portfolioStatus || 'active'
   );
 
   await Promise.race([

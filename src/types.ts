@@ -13,6 +13,8 @@ export interface UserProfile {
   updatedAt?: unknown;
 }
 
+export type PortfolioStatus = 'active' | 'castigada';
+
 export interface Client {
   id: string;
   name: string;
@@ -20,6 +22,11 @@ export interface Client {
   notes?: string;
   portalCode?: string;
   portalKey?: string;
+  portfolioStatus?: PortfolioStatus;
+  sourceModule?: string;
+  castigadaAt?: unknown;
+  castigadaBy?: string;
+  castigadaByName?: string;
   orgId: 'akrobit';
   createdBy: string;
   active: boolean;
@@ -41,6 +48,9 @@ export interface Credit {
   status: 'active' | 'settled';
   interestMode?: CreditInterestMode;
   lastPaymentAt?: unknown;
+  frozenDays?: number;
+  frozenAccruedInterest?: number;
+  frozenAt?: unknown;
   orgId: 'akrobit';
   createdBy: string;
   createdByName: string;
@@ -101,6 +111,9 @@ export interface PortalCreditItem {
   interestMode?: CreditInterestMode;
   projected30DayInterest?: number;
   projected30DayTotal?: number;
+  isFrozen?: boolean;
+  frozenDays?: number;
+  frozenAccruedInterest?: number;
 }
 
 export interface PortalTransactionItem {
@@ -123,6 +136,7 @@ export interface ClientPortalSnapshot {
   totalUsd: number;
   activeCredits: PortalCreditItem[];
   recentTransactions: PortalTransactionItem[];
+  portfolioStatus?: PortfolioStatus;
   updatedAt?: unknown;
 }
 

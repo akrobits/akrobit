@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Archive,
   Bell,
   ChevronRight,
   CreditCard,
@@ -9,17 +10,20 @@ import {
 import {
   collection,
   doc,
+  getDocFromServer,
   onSnapshot,
   query,
   serverTimestamp,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 import { ORG_ID, db } from '../lib/firebase';
 import {
   buildOverdueClientAlerts,
   calculateLiveCreditStatus,
+  formatActorName,
   formatCurrency,
   round2,
 } from '../lib/finance';
@@ -39,7 +43,7 @@ import type {
   UserProfile,
 } from '../types';
 
-type ActiveSection = 'home' | 'credit_cash';
+type ActiveSection = 'home' | 'credit_cash' | 'cartera_castigada';
 
 const UPCOMING_MODULES = [
   { id: 'mod_1', label: 'Módulo 2' },
@@ -60,7 +64,9 @@ export const MainDashboard: React.FC = () => {
 
   const [section, setSectionState] = useState<ActiveSection>(() => {
     try {
-      return sessionStorage.getItem('akrobit_section') === 'credit_cash' ? 'credit_cash' : 'home';
+      const saved = sessionStorage.getItem('akrobit_section');
+      if (saved === 'credit_cash' || saved === 'cartera_castigada') return saved;
+      return 'home';
     } catch {
       return 'home';
     }
@@ -90,6 +96,7 @@ export const MainDashboard: React.FC = () => {
   const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
   const [modRequests, setModRequests] = useState<ModificationRequest[]>([]);
   const [teamUsers, setTeamUsers] = useState<UserProfile[]>([]);
+  const [clientsServerSynced, setClientsServerSynced] = useState(false);
   const [pendingWritesCount, setPendingWritesCount] = useState(0);
   const [syncError, setSyncError] = useState('');
 
@@ -97,7 +104,9 @@ export const MainDashboard: React.FC = () => {
   const [activeInvoice, setActiveInvoice] = useState<InvoicePayload | null>(null);
   const [incomingSharedContacts, setIncomingSharedContacts] = useState<ContactCandidate[]>([]);
 
-  useBackHandler(section === 'credit_cash', () => setSection('home'));
+  useBackHandler(section === 'credit_cash' || section === 'cartera_castigada', () =>
+    setSection('home')
+  );
   useBackHandler(notificationsOpen, () => setNotificationsOpen(false));
 
   useEffect(() => {
@@ -158,6 +167,9 @@ export const MainDashboard: React.FC = () => {
       { includeMetadataChanges: true },
       (snap) => {
         setClients(snap.docs.map((d) => d.data() as Client));
+        if (!snap.metadata.fromCache) {
+          setClientsServerSynced(true);
+        }
       },
       (error) => {
         console.error('Clients snapshot error:', error);
@@ -237,6 +249,71 @@ export const MainDashboard: React.FC = () => {
     };
   }, [user, isAdmin, profile?.active]);
 
+  // Safely purge orphan credits/transactions/requests left behind by already-deleted clients
+  useEffect(() => {
+    if (!isAdmin || !clientsServerSynced) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+    const existingClientIds = new Set(clients.map((c) => c.id));
+    const orphanClientIds = new Set<string>();
+
+    for (const cr of credits) {
+      if (cr.clientId && !existingClientIds.has(cr.clientId)) {
+        orphanClientIds.add(cr.clientId);
+      }
+    }
+    for (const tx of transactions) {
+      if (tx.clientId && !existingClientIds.has(tx.clientId)) {
+        orphanClientIds.add(tx.clientId);
+      }
+    }
+    for (const req of modRequests) {
+      if (req.clientId && !existingClientIds.has(req.clientId)) {
+        orphanClientIds.add(req.clientId);
+      }
+    }
+
+    if (orphanClientIds.size === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      for (const orphanClientId of orphanClientIds) {
+        if (cancelled) return;
+        try {
+          const serverSnap = await getDocFromServer(doc(db, 'clients', orphanClientId));
+          if (serverSnap.exists()) continue;
+
+          const refs = [
+            ...credits
+              .filter((cr) => cr.clientId === orphanClientId)
+              .map((cr) => doc(db, 'credits', cr.id)),
+            ...transactions
+              .filter((tx) => tx.clientId === orphanClientId)
+              .map((tx) => doc(db, 'transactions', tx.id)),
+            ...modRequests
+              .filter((req) => req.clientId === orphanClientId)
+              .map((req) => doc(db, 'modificationRequests', req.id)),
+          ];
+
+          for (let i = 0; i < refs.length; i += 400) {
+            if (cancelled) return;
+            const batch = writeBatch(db);
+            for (const ref of refs.slice(i, i + 400)) {
+              batch.delete(ref);
+            }
+            await batch.commit();
+          }
+        } catch {
+          // Ignore transient offline/network errors during background orphan cleanup
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, clientsServerSynced, clients, credits, transactions, modRequests]);
+
   const pendingRequests = useMemo(
     () => modRequests.filter((r) => r.status === 'pending'),
     [modRequests]
@@ -263,9 +340,18 @@ export const MainDashboard: React.FC = () => {
     pendingRequests.length + overdueAlerts.length + pendingTeamCount;
 
   const summary = useMemo(() => {
-    const activeClientCount = clients.filter((c) => c.active !== false).length;
+    const activeClientsList = clients.filter(
+      (c) => c.active !== false && c.portfolioStatus !== 'castigada'
+    );
+    const castigadaClientsList = clients.filter(
+      (c) => c.active !== false && c.portfolioStatus === 'castigada'
+    );
+    const activeClientIds = new Set(activeClientsList.map((c) => c.id));
+    const castigadaClientIds = new Set(castigadaClientsList.map((c) => c.id));
+
     const txsByClient = new Map<string, CreditTransaction[]>();
     for (const tx of transactions) {
+      if (!activeClientIds.has(tx.clientId) && !castigadaClientIds.has(tx.clientId)) continue;
       const list = txsByClient.get(tx.clientId) || [];
       list.push(tx);
       txsByClient.set(tx.clientId, list);
@@ -273,17 +359,53 @@ export const MainDashboard: React.FC = () => {
 
     let activeNio = 0;
     let activeUsd = 0;
+    let castigadaNio = 0;
+    let castigadaUsd = 0;
     for (const c of credits) {
-      if (c.status === 'active' && c.currentBalance > 0) {
+      if (c.status !== 'active' || c.currentBalance <= 0) continue;
+      if (activeClientIds.has(c.clientId)) {
         const live = calculateLiveCreditStatus(c, txsByClient.get(c.clientId) || []);
         if (c.currency === 'NIO') activeNio = round2(activeNio + live.totalDueToday);
         else activeUsd = round2(activeUsd + live.totalDueToday);
+      } else if (castigadaClientIds.has(c.clientId)) {
+        const live = calculateLiveCreditStatus(c, txsByClient.get(c.clientId) || []);
+        if (c.currency === 'NIO') castigadaNio = round2(castigadaNio + live.totalDueToday);
+        else castigadaUsd = round2(castigadaUsd + live.totalDueToday);
       }
     }
-    return { activeClientCount, activeNio, activeUsd };
+    return {
+      activeClientCount: activeClientsList.length,
+      activeNio,
+      activeUsd,
+      castigadaClientCount: castigadaClientsList.length,
+      castigadaNio,
+      castigadaUsd,
+    };
   }, [clients, credits, transactions]);
 
-  const displayName = profile?.displayName || user?.displayName || user?.email || 'Akrobit';
+  useEffect(() => {
+    if (!isAdmin || transactions.length === 0) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+    const toFix = transactions.filter(
+      (tx) => tx.createdByName && tx.createdByName.trim().toLowerCase() === 'akrobits'
+    );
+    if (toFix.length === 0) return;
+
+    const batch = writeBatch(db);
+    for (const tx of toFix.slice(0, 400)) {
+      batch.update(doc(db, 'transactions', tx.id), {
+        createdByName: 'Akrobit',
+      });
+    }
+    void batch.commit().catch(() => {
+      // Ignore transient errors while normalizing historical transaction labels
+    });
+  }, [isAdmin, transactions]);
+
+  const displayName = formatActorName(
+    profile?.displayName || user?.displayName || user?.email?.split('@')[0] || 'Akrobit'
+  );
 
   return (
     <div className="min-h-[100dvh] bg-slate-50 flex flex-col">
@@ -407,7 +529,7 @@ export const MainDashboard: React.FC = () => {
             </div>
 
             {/* 4. Cuadrícula 2 en 2 hacia abajo preparada para los próximos módulos */}
-            <div className="px-3 sm:px-6 pt-5">
+            <div className="px-3 sm:px-6 pt-5 space-y-4">
               <div className="grid grid-cols-2 gap-3 sm:gap-4">
                 {UPCOMING_MODULES.map((mod) => (
                   <div
@@ -423,6 +545,41 @@ export const MainDashboard: React.FC = () => {
                   </div>
                 ))}
               </div>
+
+              {/* 5. Módulo Cartera Castigada (Cuentas congeladas 90+ días) */}
+              <button
+                type="button"
+                onClick={() => setSection('cartera_castigada')}
+                className="w-full min-h-[64px] bg-[#1e293b] hover:bg-[#0f172a] active:scale-[0.995] text-white rounded-2xl px-4 sm:px-6 py-3 flex items-center justify-between gap-4 shadow-md transition-all cursor-pointer border-b-2 border-[#d12925]"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-[#d12925] flex items-center justify-center shrink-0 shadow-sm">
+                    <Archive className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="text-left min-w-0">
+                    <h2 className="text-base font-bold tracking-tight truncate">
+                      Cartera Castigada
+                    </h2>
+                    <p className="text-xs text-slate-300 truncate">
+                      {summary.castigadaClientCount} cliente(s) ·{' '}
+                      <span className="font-mono text-[#a1d63e]">
+                        {formatCurrency(summary.castigadaNio, 'NIO')}
+                      </span>{' '}
+                      ·{' '}
+                      <span className="font-mono text-[#69b8e9]">
+                        {formatCurrency(summary.castigadaUsd, 'USD')}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="hidden sm:inline text-xs font-bold text-[#fca5a5]">
+                    Números congelados
+                  </span>
+                  <ChevronRight className="w-5 h-5 text-[#d12925]" />
+                </div>
+              </button>
             </div>
           </div>
         ) : (
@@ -433,6 +590,7 @@ export const MainDashboard: React.FC = () => {
             currentUserId={user?.uid || ''}
             currentUserName={displayName}
             isAdmin={isAdmin}
+            portfolioMode={section === 'cartera_castigada' ? 'castigada' : 'active'}
             incomingSharedContacts={incomingSharedContacts}
             onConsumeSharedContacts={() => setIncomingSharedContacts([])}
             onBackToDashboard={() => setSection('home')}

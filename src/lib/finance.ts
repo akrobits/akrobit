@@ -13,6 +13,12 @@ export function round2(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+export function formatActorName(rawName?: string): string {
+  const clean = (rawName || '').trim();
+  if (!clean || clean.toLowerCase() === 'akrobits') return 'Akrobit';
+  return clean;
+}
+
 export function getCurrencySymbol(currency: CurrencyCode): string {
   return currency === 'NIO' ? 'C$' : 'USD';
 }
@@ -114,6 +120,7 @@ export interface LiveCreditStatus {
   projected30DayInterest: number;
   projected30DayTotal: number;
   isProratedDaily: boolean;
+  isFrozen: boolean;
 }
 
 export function calculateLiveCreditStatus(
@@ -123,6 +130,10 @@ export function calculateLiveCreditStatus(
 ): LiveCreditStatus {
   const baseBalance = round2(Math.max(0, credit.currentBalance));
   const isProratedDaily = credit.interestMode === 'prorated_daily';
+  const isFrozen =
+    credit.frozenAt != null ||
+    typeof credit.frozenDays === 'number' ||
+    typeof credit.frozenAccruedInterest === 'number';
 
   if (credit.status !== 'active' || baseBalance <= 0) {
     return {
@@ -134,10 +145,29 @@ export function calculateLiveCreditStatus(
       projected30DayInterest: 0,
       projected30DayTotal: 0,
       isProratedDaily,
+      isFrozen,
     };
   }
 
   const lastActivityMs = getCreditLastActivityMs(credit, transactions);
+
+  if (isFrozen) {
+    const frozenDays = Math.max(0, Math.round(credit.frozenDays ?? 0));
+    const frozenInterest = round2(Math.max(0, credit.frozenAccruedInterest ?? 0));
+    const totalDueToday = round2(baseBalance + frozenInterest);
+    return {
+      baseBalance,
+      lastActivityMs,
+      daysElapsed: frozenDays,
+      accruedInterest: frozenInterest,
+      totalDueToday,
+      projected30DayInterest: 0,
+      projected30DayTotal: totalDueToday,
+      isProratedDaily,
+      isFrozen: true,
+    };
+  }
+
   const daysElapsed = calculateCalendarDaysElapsed(lastActivityMs, nowMs);
 
   if (isProratedDaily) {
@@ -158,6 +188,7 @@ export function calculateLiveCreditStatus(
       projected30DayInterest,
       projected30DayTotal,
       isProratedDaily: true,
+      isFrozen: false,
     };
   }
 
@@ -176,6 +207,7 @@ export function calculateLiveCreditStatus(
     projected30DayInterest: 0,
     projected30DayTotal: baseBalance,
     isProratedDaily: false,
+    isFrozen: false,
   };
 }
 
@@ -218,7 +250,7 @@ export function buildOverdueClientAlerts(params: {
   const { moduleId, moduleLabel, clients, credits, transactions, nowMs = Date.now() } = params;
   const activeClientMap = new Map<string, Client>();
   for (const client of clients) {
-    if (client.active !== false) {
+    if (client.active !== false && client.portfolioStatus !== 'castigada') {
       activeClientMap.set(client.id, client);
     }
   }

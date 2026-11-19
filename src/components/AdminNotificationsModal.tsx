@@ -17,6 +17,7 @@ import { OperationType, ORG_ID, db, handleFirestoreError } from '../lib/firebase
 import {
   INTEREST_RATE_OPTIONS,
   calculateInitialCreditTotal,
+  formatActorName,
   formatCurrency,
   generateDocId,
   round2,
@@ -424,7 +425,7 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
                             <div>
                               <p className="text-sm font-bold text-[#145f96]">{req.clientName}</p>
                               <p className="text-xs text-slate-500">
-                                Solicitado por <strong>{req.requestedByName}</strong> ·{' '}
+                                Solicitado por <strong>{formatActorName(req.requestedByName)}</strong> ·{' '}
                                 {req.targetType === 'credit'
                                   ? 'Edición de Crédito'
                                   : 'Edición de Pago'}
@@ -597,7 +598,7 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
                               />
                               <div className="min-w-0">
                                 <p className="text-sm font-bold text-[#145f96] truncate">
-                                  {member.displayName}
+                                  {formatActorName(member.displayName)}
                                   {isSelf && (
                                     <span className="text-xs font-semibold text-[#4d7c0f]">
                                       {' '}

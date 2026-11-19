@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Archive,
   ArrowLeft,
   BadgeDollarSign,
   Check,
@@ -13,6 +14,7 @@ import {
   MessageCircle,
   RefreshCw,
   ShieldAlert,
+  Snowflake,
   X,
 } from 'lucide-react';
 import { doc, serverTimestamp, writeBatch, type WriteBatch } from 'firebase/firestore';
@@ -25,6 +27,7 @@ import {
   calculateLiveCreditStatus,
   calculatePaymentOnBalance,
   calculateProratedPayment,
+  formatActorName,
   formatCurrency,
   generateDocId,
   getPortalAgingTier,
@@ -53,10 +56,13 @@ import type {
 type ActiveAction = 'menu' | 'add_credit' | 'register_payment' | 'modify_records';
 
 function getTimestampMillis(ts: unknown): number {
+  if (typeof ts === 'number' && Number.isFinite(ts)) {
+    return ts;
+  }
   if (ts && typeof ts === 'object' && 'toMillis' in ts) {
     return (ts as { toMillis: () => number }).toMillis();
   }
-  return 0;
+  return Date.now();
 }
 
 interface ClientDetailModalProps {
@@ -87,22 +93,28 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
   const [principalInput, setPrincipalInput] = useState('');
   const [interestRate, setInterestRate] = useState<number | ''>('');
 
-  // 2. Registrar Pago state (active credits ordered chronologically oldest -> newest for N°1, N°2...)
+  // All client credits ordered chronologically oldest -> newest so Credit Cash N°1, N°2, N°3... never renumber
+  const allCreditsSorted = useMemo(
+    () =>
+      [...credits].sort(
+        (a, b) => getTimestampMillis(a.createdAt) - getTimestampMillis(b.createdAt)
+      ),
+    [credits]
+  );
+
   const activeCredits = useMemo(
     () =>
-      credits
-        .filter((c) => c.status === 'active' && c.currentBalance > 0)
-        .sort((a, b) => getTimestampMillis(a.createdAt) - getTimestampMillis(b.createdAt)),
-    [credits]
+      allCreditsSorted.filter((c) => c.status === 'active' && c.currentBalance > 0),
+    [allCreditsSorted]
   );
 
   const creditLabelById = useMemo(() => {
     const map = new Map<string, string>();
-    activeCredits.forEach((cr, idx) => {
+    allCreditsSorted.forEach((cr, idx) => {
       map.set(cr.id, `Credit Cash N°${idx + 1}`);
     });
     return map;
-  }, [activeCredits]);
+  }, [allCreditsSorted]);
 
   const [selectedCreditId, setSelectedCreditId] = useState<string>('');
   const [paymentInput, setPaymentInput] = useState('');
@@ -116,9 +128,12 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
   const [modifyNewRate, setModifyNewRate] = useState<number>(10);
   const [modifyReason, setModifyReason] = useState('');
 
+  const isCastigada = client.portfolioStatus === 'castigada';
+
   const [submitting, setSubmitting] = useState(false);
   const [regeneratingCode, setRegeneratingCode] = useState(false);
   const [portalCopied, setPortalCopied] = useState(false);
+  const [castigadaConfirmOpen, setCastigadaConfirmOpen] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
 
@@ -128,6 +143,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
     setAction('menu');
   });
   useBackHandler(whatsappPickOpen, () => setWhatsappPickOpen(false));
+  useBackHandler(castigadaConfirmOpen, () => setCastigadaConfirmOpen(false));
 
   const liveStatusByCreditId = useMemo(() => {
     const map = new Map<string, LiveCreditStatus>();
@@ -179,6 +195,25 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
   const parsedPayment = Number(paymentInput) || 0;
   const paymentPreview = useMemo(() => {
     if (!activePaymentCredit || !activePaymentLiveStatus) return null;
+    if (activePaymentLiveStatus.isFrozen) {
+      const totalDueToday = activePaymentLiveStatus.totalDueToday;
+      const safePayment = round2(Math.max(0, parsedPayment));
+      const newBalance = round2(Math.max(0, totalDueToday - safePayment));
+      return {
+        mode: activePaymentLiveStatus.isProratedDaily
+          ? ('prorated_daily' as const)
+          : ('pre_added' as const),
+        baseBalance: activePaymentLiveStatus.baseBalance,
+        daysElapsed: activePaymentLiveStatus.daysElapsed,
+        accruedInterest: activePaymentLiveStatus.accruedInterest,
+        totalDueToday,
+        remainingBeforeInterest: newBalance,
+        interestAdded: 0,
+        newBalance,
+        settled: newBalance <= 0,
+      };
+    }
+
     if (activePaymentLiveStatus.isProratedDaily) {
       const res = calculateProratedPayment(
         activePaymentLiveStatus.baseBalance,
@@ -286,7 +321,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         interestRate,
         previousBalance: 0,
         newBalance: safePrincipal,
-        note: `Crédito ${interestRate}% · Ref 30 días: ${formatCurrency(computedCreditTotal, currency)}`,
+        note: `Ref. 30 días (${interestRate}%): ${formatCurrency(computedCreditTotal, currency)}`,
         orgId: ORG_ID,
         createdBy: currentUserId,
         createdByName: currentUserName,
@@ -296,13 +331,17 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
       batch.set(doc(db, 'credits', creditId), newCreditData);
       batch.set(doc(db, 'transactions', txId), newTxData);
 
+      const nextCreditNumber = allCreditsSorted.length + 1;
+      const nextCreditLabel = `Credit Cash N°${nextCreditNumber}`;
+
       attachPortalSnapshotToBatch(
         batch,
         portalKey,
         client.id,
         client.name,
-        [...credits, newCreditData],
-        [newTxData, ...transactions]
+        [...credits, { ...newCreditData, createdAt: Date.now() }],
+        [{ ...newTxData, createdAt: Date.now() }, ...transactions],
+        client.portfolioStatus || 'active'
       );
 
       await Promise.race([
@@ -322,8 +361,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         interestMode: 'prorated_daily',
         projected30DayInterest: projectedInterest30,
         projected30DayTotal: computedCreditTotal,
-        creditLabel:
-          activeCredits.length >= 1 ? `Credit Cash N°${activeCredits.length + 1}` : undefined,
+        creditLabel: nextCreditLabel,
         portalUrl: getPublicPortalUrl(),
         portalCode,
         attendedBy: currentUserName,
@@ -380,6 +418,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
       batch.update(creditRef, {
         currentBalance: paymentPreview.newBalance,
         status: nextStatus,
+        ...(activePaymentLiveStatus.isFrozen ? { frozenAccruedInterest: 0 } : {}),
         lastPaymentAt: nowServer,
         updatedAt: nowServer,
       });
@@ -396,12 +435,16 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         previousBalance: activePaymentCredit.currentBalance,
         newBalance: paymentPreview.newBalance,
         note: paymentPreview.settled
-          ? isProrated
-            ? `Liquidación total al día ${paymentPreview.daysElapsed} (+${formatCurrency(paymentPreview.accruedInterest, activePaymentCredit.currency)} int.)`
-            : 'Abono final — Crédito liquidado'
-          : isProrated
-            ? `Abono día ${paymentPreview.daysElapsed} (+${formatCurrency(paymentPreview.accruedInterest, activePaymentCredit.currency)} int.)`
-            : `Abono sobre saldo (+${activePaymentCredit.interestRate}% s/restante)`,
+          ? activePaymentLiveStatus.isFrozen
+            ? 'Liquidación total en Cartera Castigada'
+            : isProrated
+              ? `Liquidación total al día ${paymentPreview.daysElapsed} (+${formatCurrency(paymentPreview.accruedInterest, activePaymentCredit.currency)} int.)`
+              : 'Abono final — Crédito liquidado'
+          : activePaymentLiveStatus.isFrozen
+            ? 'Abono sobre saldo congelado (Cartera Castigada)'
+            : isProrated
+              ? `Abono día ${paymentPreview.daysElapsed} (+${formatCurrency(paymentPreview.accruedInterest, activePaymentCredit.currency)} int.)`
+              : `Abono sobre saldo (+${activePaymentCredit.interestRate}% s/restante)`,
         orgId: ORG_ID,
         createdBy: currentUserId,
         createdByName: currentUserName,
@@ -417,6 +460,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
               ...cr,
               currentBalance: paymentPreview.newBalance,
               status: nextStatus,
+              ...(activePaymentLiveStatus.isFrozen ? { frozenAccruedInterest: 0 } : {}),
               lastPaymentAt: nowLocalMs,
             }
           : cr
@@ -427,7 +471,8 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         client.id,
         client.name,
         updatedCredits,
-        [{ ...newTxData, createdAt: nowLocalMs }, ...transactions]
+        [{ ...newTxData, createdAt: nowLocalMs }, ...transactions],
+        client.portfolioStatus || 'active'
       );
 
       await Promise.race([
@@ -452,8 +497,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         totalDueToday: paymentPreview.totalDueToday,
         interestMode: activePaymentCredit.interestMode || 'pre_added',
         newBalance: paymentPreview.newBalance,
-        creditLabel:
-          activeCredits.length > 1 ? creditLabelById.get(activePaymentCredit.id) : undefined,
+        creditLabel: creditLabelById.get(activePaymentCredit.id),
         portalUrl: getPublicPortalUrl(),
         portalCode,
         attendedBy: currentUserName,
@@ -599,7 +643,8 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
           client.id,
           client.name,
           updatedCredits,
-          [adjTx, ...updatedTxs]
+          [adjTx, ...updatedTxs],
+          client.portfolioStatus || 'active'
         );
 
         await Promise.race([
@@ -658,8 +703,8 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
       .sort((a, b) => getTimestampMillis(b.createdAt) - getTimestampMillis(a.createdAt));
 
     const latestTx = creditTxs[0];
-    const multiLabel =
-      activeCredits.length > 1 ? `Credit Cash N°${index + 1}` : undefined;
+    const creditLabel =
+      creditLabelById.get(credit.id) || `Credit Cash N°${index + 1}`;
     const live = liveStatusByCreditId.get(credit.id) || calculateLiveCreditStatus(credit, transactions);
 
     if (latestTx && latestTx.type === 'payment') {
@@ -678,7 +723,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
           totalDueToday: impliedTotalDay,
           interestMode: 'prorated_daily',
           newBalance: credit.currentBalance,
-          creditLabel: multiLabel,
+          creditLabel,
           portalUrl: getPublicPortalUrl(),
           portalCode: client.portalCode,
           attendedBy: latestTx.createdByName || currentUserName,
@@ -704,7 +749,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         interestAdded: breakdown.interestAdded,
         interestMode: credit.interestMode || 'pre_added',
         newBalance: credit.currentBalance,
-        creditLabel: multiLabel,
+        creditLabel,
         portalUrl: getPublicPortalUrl(),
         portalCode: client.portalCode,
         attendedBy: latestTx.createdByName || currentUserName,
@@ -725,7 +770,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
       interestMode: credit.interestMode || 'pre_added',
       projected30DayInterest: live.projected30DayInterest,
       projected30DayTotal: live.projected30DayTotal,
-      creditLabel: multiLabel,
+      creditLabel,
       portalUrl: getPublicPortalUrl(),
       portalCode: client.portalCode,
       attendedBy: credit.createdByName || currentUserName,
@@ -738,7 +783,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
     const consolidatedItems: ConsolidatedCreditItem[] = activeCredits.map((cr, idx) => {
       const live = liveStatusByCreditId.get(cr.id) || calculateLiveCreditStatus(cr, transactions);
       return {
-        label: `Credit Cash N°${idx + 1}`,
+        label: creditLabelById.get(cr.id) || `Credit Cash N°${idx + 1}`,
         currency: cr.currency,
         principal: cr.principal,
         interestRate: cr.interestRate,
@@ -828,6 +873,95 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
     setWhatsappPickOpen(true);
   };
 
+  const canMoveToCastigada =
+    isAdmin && !isCastigada && activeCredits.length > 0 && maxDaysWithoutPayment >= 90;
+
+  const handleMoveToCarteraCastigada = async () => {
+    if (!canMoveToCastigada) return;
+    setErrorMessage('');
+    setStatusMessage('');
+    setSubmitting(true);
+    try {
+      const batch = writeBatch(db);
+      const { portalKey } = await resolveClientPortalCredentials(batch);
+      const nowServer = serverTimestamp();
+
+      batch.update(doc(db, 'clients', client.id), {
+        portfolioStatus: 'castigada',
+        sourceModule: client.sourceModule || 'credit_cash',
+        castigadaAt: nowServer,
+        castigadaBy: currentUserId,
+        castigadaByName: currentUserName,
+        updatedAt: nowServer,
+      });
+
+      const updatedCredits = credits.map((cr) => {
+        if (cr.status !== 'active' || cr.currentBalance <= 0) return cr;
+        const live = liveStatusByCreditId.get(cr.id) || calculateLiveCreditStatus(cr, transactions);
+        batch.update(doc(db, 'credits', cr.id), {
+          frozenDays: live.daysElapsed,
+          frozenAccruedInterest: live.accruedInterest,
+          frozenAt: nowServer,
+          updatedAt: nowServer,
+        });
+        return {
+          ...cr,
+          frozenDays: live.daysElapsed,
+          frozenAccruedInterest: live.accruedInterest,
+          frozenAt: Date.now(),
+        };
+      });
+
+      const primaryActive = activeCredits[0];
+      const primaryLive = primaryActive ? liveStatusByCreditId.get(primaryActive.id) : undefined;
+      const moveTxId = generateDocId('tx');
+      const moveTxData: CreditTransaction = {
+        id: moveTxId,
+        creditId: primaryActive.id,
+        clientId: client.id,
+        type: 'adjustment',
+        currency: primaryActive.currency,
+        amount: 0,
+        interestRate: primaryActive.interestRate,
+        previousBalance: primaryLive?.baseBalance ?? primaryActive.currentBalance,
+        newBalance: primaryLive?.totalDueToday ?? primaryActive.currentBalance,
+        note: `Traslado a Cartera Castigada por ${currentUserName} (${maxDaysWithoutPayment} días sin abono · números congelados)`,
+        orgId: ORG_ID,
+        createdBy: currentUserId,
+        createdByName: currentUserName,
+        createdAt: nowServer,
+      };
+      batch.set(doc(db, 'transactions', moveTxId), moveTxData);
+
+      attachPortalSnapshotToBatch(
+        batch,
+        portalKey,
+        client.id,
+        client.name,
+        updatedCredits,
+        [{ ...moveTxData, createdAt: Date.now() }, ...transactions],
+        'castigada'
+      );
+
+      if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+        await batch.commit();
+      } else {
+        await Promise.race([
+          batch.commit(),
+          new Promise<void>((resolve) => setTimeout(resolve, 1200)),
+        ]);
+      }
+
+      setCastigadaConfirmOpen(false);
+      onBack();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setErrorMessage(`No se pudo mover a Cartera Castigada: ${msg}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Client Header */}
@@ -842,7 +976,15 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-bold truncate">{client.name}</h2>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-lg font-bold truncate">{client.name}</h2>
+              {isCastigada && (
+                <span className="inline-flex items-center gap-1 rounded-md bg-[#d12925] px-2 py-0.5 text-[10px] font-bold text-white uppercase tracking-wide shrink-0">
+                  <Snowflake className="w-3 h-3" />
+                  Cartera Castigada
+                </span>
+              )}
+            </div>
             <p className="text-xs text-white/80 font-mono">{client.phone}</p>
           </div>
           <button
@@ -859,13 +1001,17 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         {/* Separated Balances in NIO (C$) and USD */}
         <div className="grid grid-cols-2 gap-2.5">
           <div className="rounded-xl bg-white/10 px-3.5 py-2.5 border border-white/15">
-            <span className="text-[11px] text-white/75 block">Total exigible (C$)</span>
+            <span className="text-[11px] text-white/75 block">
+              {isCastigada ? 'Saldo congelado (C$)' : 'Total exigible (C$)'}
+            </span>
             <span className="text-base font-bold font-mono tabular-nums text-[#a1d63e]">
               {formatCurrency(totalsByCurrency.nio, 'NIO')}
             </span>
           </div>
           <div className="rounded-xl bg-white/10 px-3.5 py-2.5 border border-white/15">
-            <span className="text-[11px] text-white/75 block">Total exigible (USD)</span>
+            <span className="text-[11px] text-white/75 block">
+              {isCastigada ? 'Saldo congelado (USD)' : 'Total exigible (USD)'}
+            </span>
             <span className="text-base font-bold font-mono tabular-nums text-[#69b8e9]">
               {formatCurrency(totalsByCurrency.usd, 'USD')}
             </span>
@@ -875,20 +1021,23 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         {/* Aging indicator when client has active debt */}
         {activeCredits.length > 0 && (() => {
           const headerTier = getPortalAgingTier(maxDaysWithoutPayment);
-          const dotColor =
-            headerTier === 'red'
+          const dotColor = isCastigada
+            ? 'bg-[#69b8e9]'
+            : headerTier === 'red'
               ? 'bg-[#d12925]'
               : headerTier === 'orange'
                 ? 'bg-[#df7729]'
                 : 'bg-[#a1d63e]';
-          const textColor =
-            headerTier === 'red'
+          const textColor = isCastigada
+            ? 'text-[#69b8e9]'
+            : headerTier === 'red'
               ? 'text-[#fca5a5]'
               : headerTier === 'orange'
                 ? 'text-[#fdba74]'
                 : 'text-[#a1d63e]';
-          const label =
-            maxDaysWithoutPayment >= 30
+          const label = isCastigada
+            ? `Números congelados (${maxDaysWithoutPayment} días sin abono · no corre interés)`
+            : maxDaysWithoutPayment >= 30
               ? `Alerta: ${maxDaysWithoutPayment} días sin abono o pago`
               : maxDaysWithoutPayment >= 20
                 ? `Atención: ${maxDaysWithoutPayment} días sin abono`
@@ -969,6 +1118,34 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         <div className="rounded-xl bg-[#d12925]/10 border border-[#d12925]/30 px-4 py-3 text-xs font-semibold text-[#b91c1c]">
           {errorMessage}
         </div>
+      )}
+
+      {/* Admin-only 90+ days button: Move to Cartera Castigada */}
+      {canMoveToCastigada && (
+        <button
+          type="button"
+          onClick={() => {
+            setErrorMessage('');
+            setStatusMessage('');
+            setCastigadaConfirmOpen(true);
+          }}
+          className="w-full rounded-2xl bg-[#d12925]/10 hover:bg-[#d12925]/15 border-2 border-[#d12925]/40 px-4 py-3 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-[#d12925] text-white flex items-center justify-center shrink-0 shadow-sm">
+              <Archive className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-[#d12925]">
+                Mover a Cartera Castigada ({maxDaysWithoutPayment} días sin abono)
+              </p>
+              <p className="text-[11px] text-slate-600">
+                Solo Administrador · Congela los saldos actuales y retira de Credit Cash activo
+              </p>
+            </div>
+          </div>
+          <Snowflake className="w-4 h-4 text-[#d12925] shrink-0" />
+        </button>
       )}
 
       {/* 3-Option Menu when tapping a client */}
@@ -1204,9 +1381,10 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                       const live = liveStatusByCreditId.get(c.id);
                       const dueToday = live ? live.totalDueToday : c.currentBalance;
                       const days = live ? live.daysElapsed : 0;
+                      const label = creditLabelById.get(c.id) || `Credit Cash N°${idx + 1}`;
                       return (
                         <option key={c.id} value={c.id}>
-                          Credit Cash N°{idx + 1} · Hoy: {formatCurrency(dueToday, c.currency)} (Cap:{' '}
+                          {label} · Hoy: {formatCurrency(dueToday, c.currency)} (Cap:{' '}
                           {formatCurrency(c.currentBalance, c.currency)} · {days}d · {c.interestRate}%)
                         </option>
                       );
@@ -1324,7 +1502,9 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                           <p className="text-[11px] text-slate-500">
                             {paymentPreview.settled
                               ? 'Crédito liquidado al 100% hoy.'
-                              : 'Al guardar, el contador de días vuelve a 0 desde hoy.'}
+                              : activePaymentLiveStatus.isFrozen
+                                ? 'Al guardar, el saldo restante continúa congelado sin generar nuevos intereses.'
+                                : 'Al guardar, el contador de días vuelve a 0 desde hoy.'}
                           </p>
                         </>
                       ) : (
@@ -1440,9 +1620,9 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                   onChange={(e) => setModifyCreditId(e.target.value)}
                   className="w-full min-h-[44px] rounded-xl border border-slate-300 bg-white px-3 text-sm"
                 >
-                  {credits.map((c) => (
+                  {allCreditsSorted.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {formatCurrency(c.principal, c.currency)} ({c.interestRate}%) · Saldo:{' '}
+                      {creditLabelById.get(c.id) || 'Credit Cash'} · {formatCurrency(c.principal, c.currency)} ({c.interestRate}%) · Saldo:{' '}
                       {formatCurrency(c.currentBalance, c.currency)}
                     </option>
                   ))}
@@ -1564,28 +1744,31 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
               return (
                 <div
                   key={credit.id}
-                  className={`px-4 py-3 flex items-center justify-between gap-3 ${underlineCls}`}
+                  className={`px-3.5 py-3 space-y-1.5 ${underlineCls}`}
                 >
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-[#145f96]">
-                      Credit Cash N°{idx + 1}{' '}
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p className="text-sm font-bold text-[#145f96] whitespace-nowrap">
+                      {creditLabelById.get(credit.id) || `Credit Cash N°${idx + 1}`}{' '}
                       <span className={`text-xs font-bold ${dayColor}`}>
-                        · {days} día{days === 1 ? '' : 's'}
+                        {live?.isFrozen
+                          ? `· Congelado (${days}d)`
+                          : `· ${days} ${days === 1 ? 'día' : 'días'}`}
                       </span>
                     </p>
-                    <p className="text-xs text-slate-500 truncate">
-                      Cap. pendiente: {formatCurrency(live?.baseBalance ?? credit.currentBalance, credit.currency)} ({credit.interestRate}%)
-                      {(live?.accruedInterest ?? 0) > 0 &&
-                        ` · Int. al día: +${formatCurrency(live!.accruedInterest, credit.currency)}`}
+                    <p className="text-right font-mono text-sm font-bold text-slate-900 tabular-nums whitespace-nowrap shrink-0">
+                      <span className="font-sans text-[11px] font-normal text-slate-500 mr-1">
+                        {live?.isFrozen ? 'Fijo:' : 'Hoy:'}
+                      </span>
+                      {formatCurrency(live?.totalDueToday ?? credit.currentBalance, credit.currency)}
                     </p>
                   </div>
-                  <div className="text-right shrink-0 flex items-center gap-2.5">
-                    <div>
-                      <span className="text-[11px] text-slate-500 block">Total hoy</span>
-                      <span className="text-sm font-mono font-bold text-slate-900 tabular-nums">
-                        {formatCurrency(live?.totalDueToday ?? credit.currentBalance, credit.currency)}
-                      </span>
-                    </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-slate-500 leading-snug">
+                      Cap: {formatCurrency(live?.baseBalance ?? credit.currentBalance, credit.currency)} ({credit.interestRate}%)
+                      {(live?.accruedInterest ?? 0) > 0 &&
+                        ` · Int: +${formatCurrency(live!.accruedInterest, credit.currency)}`}
+                    </p>
                     <button
                       type="button"
                       onClick={() => {
@@ -1594,7 +1777,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                         setSelectedCreditId(credit.id);
                         setAction('register_payment');
                       }}
-                      className="min-h-[36px] px-2.5 rounded-lg bg-[#df7729]/15 hover:bg-[#df7729]/25 text-[#df7729] text-xs font-bold cursor-pointer whitespace-nowrap"
+                      className="min-h-[34px] px-3 rounded-lg bg-[#df7729]/15 hover:bg-[#df7729]/25 text-[#df7729] text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
                     >
                       Abonar
                     </button>
@@ -1620,37 +1803,47 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
           <p className="text-xs text-slate-500 py-3">Sin movimientos registrados todavía.</p>
         ) : (
           <div className="divide-y divide-slate-100">
-            {transactions.map((tx) => (
-              <div key={tx.id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
-                <div className="min-w-0">
+            {transactions.map((tx) => {
+              const txCreditLabel = creditLabelById.get(tx.creditId);
+              const shortCreditNum = txCreditLabel ? txCreditLabel.replace('Credit Cash ', '') : '';
+              return (
+              <div key={tx.id} className="py-2.5 space-y-0.5 text-xs">
+                <div className="flex items-baseline justify-between gap-2">
                   <p className="font-bold text-slate-900">
                     {tx.type === 'credit'
-                      ? `Crédito otorgado (${tx.interestRate}%)`
+                      ? `Crédito otorgado${shortCreditNum ? ` ${shortCreditNum}` : ''} (${tx.interestRate}%)`
                       : tx.type === 'payment'
-                        ? 'Pago recibido'
-                        : 'Ajuste de registro'}
+                        ? `Pago recibido${shortCreditNum ? ` · ${shortCreditNum}` : ''}`
+                        : `Ajuste${shortCreditNum ? ` · ${shortCreditNum}` : ''}`}
                   </p>
-                  <p className="text-slate-500 truncate">
-                    {formatDateTime(tx.createdAt)} · {tx.createdByName}
-                    {tx.hasPendingWrites ? ' · Pendiente sync' : ''}
-                  </p>
-                  {tx.note && <p className="text-slate-500 truncate">{tx.note}</p>}
-                </div>
-                <div className="text-right shrink-0 font-mono tabular-nums">
                   <p
-                    className={`font-bold ${
+                    className={`font-mono font-bold tabular-nums whitespace-nowrap shrink-0 ${
                       tx.type === 'payment' ? 'text-[#4d7c0f]' : 'text-[#145f96]'
                     }`}
                   >
                     {tx.type === 'payment' ? '-' : ''}
                     {formatCurrency(tx.amount, tx.currency)}
                   </p>
-                  <p className="text-[11px] text-slate-500">
+                </div>
+
+                <div className="flex items-baseline justify-between gap-2 text-slate-500">
+                  <p className="min-w-0 truncate">
+                    {formatDateTime(tx.createdAt)} · {formatActorName(tx.createdByName)}
+                    {tx.hasPendingWrites ? ' · Pendiente sync' : ''}
+                  </p>
+                  <p className="text-[11px] font-mono tabular-nums whitespace-nowrap shrink-0">
                     Saldo: {formatCurrency(tx.newBalance, tx.currency)}
                   </p>
                 </div>
+
+                {tx.note && (
+                  <p className="text-[11px] text-slate-500 leading-snug break-words">
+                    {tx.note}
+                  </p>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -1705,6 +1898,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                   const live = liveStatusByCreditId.get(credit.id);
                   const dueToday = live ? live.totalDueToday : credit.currentBalance;
                   const days = live ? live.daysElapsed : 0;
+                  const label = creditLabelById.get(credit.id) || `Credit Cash N°${idx + 1}`;
                   return (
                     <button
                       key={credit.id}
@@ -1717,7 +1911,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                     >
                       <div className="min-w-0">
                         <p className="text-sm font-bold text-[#145f96]">
-                          Credit Cash N°{idx + 1} · {days}d
+                          {label} · {days}d
                         </p>
                         <p className="text-xs text-slate-500 truncate">
                           {formatDateTime(credit.createdAt)} · Cap:{' '}
@@ -1734,6 +1928,56 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                   );
                 })}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CONFIRM MOVE TO CARTERA CASTIGADA (ADMIN ONLY, 90+ DAYS) */}
+      {castigadaConfirmOpen && canMoveToCastigada && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white shadow-2xl border border-slate-200 p-5 space-y-4">
+            <div className="flex items-center gap-2.5 text-[#d12925]">
+              <Archive className="w-5 h-5 shrink-0" />
+              <h3 className="text-base font-bold">¿Mover a Cartera Castigada?</h3>
+            </div>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Se congelarán los números de <strong>{client.name}</strong> al día de hoy (
+              <strong>{maxDaysWithoutPayment} días</strong> sin abono). Dejará de generar
+              intereses diarios y saldrá de Credit Cash activo y de las alertas.
+            </p>
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-3.5 py-2.5 text-xs space-y-1">
+              <span className="font-bold text-slate-700 block">Totales que quedarán congelados:</span>
+              {totalsByCurrency.nio > 0 && (
+                <div className="flex items-center justify-between font-mono font-bold text-[#145f96]">
+                  <span>Córdobas:</span>
+                  <span>{formatCurrency(totalsByCurrency.nio, 'NIO')}</span>
+                </div>
+              )}
+              {totalsByCurrency.usd > 0 && (
+                <div className="flex items-center justify-between font-mono font-bold text-[#df7729]">
+                  <span>Dólares:</span>
+                  <span>{formatCurrency(totalsByCurrency.usd, 'USD')}</span>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => setCastigadaConfirmOpen(false)}
+                className="flex-1 min-h-[44px] rounded-xl bg-slate-100 text-slate-800 text-sm font-semibold cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={handleMoveToCarteraCastigada}
+                className="flex-1 min-h-[44px] rounded-xl bg-[#d12925] hover:bg-[#b91c1c] text-white text-sm font-bold cursor-pointer"
+              >
+                {submitting ? 'Congelando...' : 'Congelar y Mover'}
+              </button>
             </div>
           </div>
         </div>
