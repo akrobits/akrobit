@@ -232,7 +232,7 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
-      allow list: if isBootstrappedAdmin();
+      allow list: if isAdmin();
       allow create: if isValidId(userId)
         && isValidUserProfile(incoming())
         && isOwner(userId)
@@ -240,8 +240,8 @@ service cloud.firestore {
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && (
-          (isBootstrappedAdmin() && incoming().role == 'admin') ||
-          (incoming().role == 'employee' && incoming().active == true)
+          (isBootstrappedAdmin() && incoming().role == 'admin' && incoming().active == true) ||
+          (incoming().role == 'employee' && incoming().active == false)
         );
       allow update: if isValidId(userId)
         && isValidUserProfile(incoming())
@@ -261,7 +261,7 @@ service cloud.firestore {
 
       match /private/{docId} {
         allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
-        allow list: if isOwner(userId) || isBootstrappedAdmin();
+        allow list: if isOwner(userId) || isAdmin();
         allow create: if isValidId(userId) && isValidId(docId)
           && isValidUserPrivateInfo(incoming())
           && isOwner(userId)
@@ -290,7 +290,7 @@ service cloud.firestore {
 
     match /clients/{clientId} {
       allow get: if isValidId(clientId) && isActiveMember();
-      allow list: if isVerified() && existing().orgId == 'akrobit';
+      allow list: if isActiveMember() && existing().orgId == 'akrobit';
       allow create: if isValidId(clientId)
         && isValidClient(incoming())
         && isActiveMember()
@@ -315,7 +315,7 @@ service cloud.firestore {
 
     match /credits/{creditId} {
       allow get: if isValidId(creditId) && isActiveMember();
-      allow list: if isVerified() && existing().orgId == 'akrobit';
+      allow list: if isActiveMember() && existing().orgId == 'akrobit';
       allow create: if isValidId(creditId)
         && isValidCredit(incoming())
         && isActiveMember()
@@ -350,7 +350,7 @@ service cloud.firestore {
 
     match /transactions/{transactionId} {
       allow get: if isValidId(transactionId) && isActiveMember();
-      allow list: if isVerified() && existing().orgId == 'akrobit';
+      allow list: if isActiveMember() && existing().orgId == 'akrobit';
       allow create: if isValidId(transactionId)
         && isValidTransaction(incoming())
         && isActiveMember()
@@ -376,7 +376,7 @@ service cloud.firestore {
 
     match /modificationRequests/{requestId} {
       allow get: if isValidId(requestId) && isActiveMember();
-      allow list: if isVerified() && (isBootstrappedAdmin() || existing().requestedBy == request.auth.uid);
+      allow list: if isActiveMember() && (isAdmin() || existing().requestedBy == request.auth.uid);
       allow create: if isValidId(requestId)
         && isValidModificationRequest(incoming())
         && isActiveMember()

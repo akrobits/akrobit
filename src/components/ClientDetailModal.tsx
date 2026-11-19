@@ -19,15 +19,18 @@ import { doc, serverTimestamp, writeBatch, type WriteBatch } from 'firebase/fire
 import { ORG_ID, db } from '../lib/firebase';
 import {
   INTEREST_RATE_OPTIONS,
+  buildWhatsAppBusinessLink,
   calculateInitialCreditTotal,
   calculateInterestCeil,
   calculatePaymentOnBalance,
   formatCurrency,
   generateDocId,
+  isAndroidDevice,
   round2,
 } from '../lib/finance';
 import {
   attachPortalSnapshotToBatch,
+  buildClientPortalAccessMessage,
   computePortalKey,
   generatePortalCode,
   getPublicPortalUrl,
@@ -649,9 +652,20 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
     };
   };
 
+  const isAndroid = isAndroidDevice();
+  const inIframe = typeof window !== 'undefined' && window.top !== window.self;
+  const openInBlankTab = !isAndroid || inIframe;
+
+  const portalPinWaLink = client.portalCode
+    ? buildWhatsAppBusinessLink(
+        client.phone,
+        buildClientPortalAccessMessage(client.name, client.phone, client.portalCode)
+      )
+    : '';
+
   const handleCopyPortalAccess = async () => {
     if (!client.portalCode) return;
-    const text = `Consulta tu historial Akrobit:\n${getPublicPortalUrl()}\nTeléfono: ${client.phone}\nCódigo secreto: ${client.portalCode}`;
+    const text = buildClientPortalAccessMessage(client.name, client.phone, client.portalCode);
     try {
       await navigator.clipboard.writeText(text);
       setPortalCopied(true);
@@ -742,36 +756,48 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         </div>
 
         {/* Client Portal 6-digit Secret Code Strip */}
-        <div className="mt-2.5 rounded-xl bg-white/10 px-3.5 py-2 border border-white/15 flex items-center justify-between gap-2 text-xs">
+        <div className="mt-2.5 rounded-xl bg-white/10 px-3.5 py-2.5 border border-white/15 flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="flex items-center gap-2 min-w-0">
             <KeyRound className="w-3.5 h-3.5 text-[#a1d63e] shrink-0" />
-            <span className="text-white/80 truncate">Código portal:</span>
-            <span className="font-mono font-bold tracking-wider text-[#a1d63e]">
+            <span className="text-white/80 whitespace-nowrap">PIN portal:</span>
+            <span className="font-mono font-bold tracking-wider text-[#a1d63e] tabular-nums">
               {client.portalCode || 'Generando...'}
             </span>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             {client.portalCode && (
-              <button
-                type="button"
-                onClick={handleCopyPortalAccess}
-                className="min-h-[32px] px-2.5 rounded-lg bg-white/10 hover:bg-white/20 text-white font-semibold flex items-center gap-1 cursor-pointer"
-                title="Copiar enlace y código del cliente"
-              >
-                {portalCopied ? (
-                  <Check className="w-3.5 h-3.5 text-[#a1d63e]" />
-                ) : (
-                  <Copy className="w-3.5 h-3.5" />
-                )}
-                <span>{portalCopied ? 'Copiado' : 'Copiar'}</span>
-              </button>
+              <>
+                <a
+                  href={portalPinWaLink}
+                  target={openInBlankTab ? '_blank' : undefined}
+                  rel={openInBlankTab ? 'noopener noreferrer' : undefined}
+                  title="Enviar PIN de acceso por WhatsApp Business"
+                  className="min-h-[36px] px-2.5 rounded-lg bg-[#25D366] hover:bg-[#1fb857] text-slate-950 font-bold flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 shadow-sm"
+                >
+                  <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>Enviar PIN</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={handleCopyPortalAccess}
+                  className="min-h-[36px] px-2.5 rounded-lg bg-white/10 hover:bg-white/20 text-white font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                  title="Copiar enlace y PIN del cliente"
+                >
+                  {portalCopied ? (
+                    <Check className="w-3.5 h-3.5 text-[#a1d63e]" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  <span>{portalCopied ? 'Copiado' : 'Copiar'}</span>
+                </button>
+              </>
             )}
             <button
               type="button"
               disabled={regeneratingCode}
               onClick={handleRegenerateCode}
-              title="Generar nuevo código secreto (anula el anterior)"
-              className="min-h-[32px] px-2.5 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white font-semibold flex items-center gap-1 cursor-pointer"
+              title="Generar nuevo PIN secreto (anula el anterior)"
+              className="min-h-[36px] px-2.5 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${regeneratingCode ? 'animate-spin' : ''}`} />
               <span>Cambiar</span>

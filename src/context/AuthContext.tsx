@@ -57,7 +57,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         uid: currentUser.uid,
         displayName: currentUser.displayName || currentUser.email || 'Usuario',
         role: isBootstrapped ? 'admin' : 'employee',
-        active: true,
+        active: isBootstrapped,
       });
       setIsAdmin(false);
       return;
@@ -88,7 +88,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const userSnap = await getDoc(userRef);
       if (userSnap.exists()) {
         const data = userSnap.data() as UserProfile;
-        if (isBootstrapped && data.role !== 'admin') {
+        if (isBootstrapped && (data.role !== 'admin' || data.active !== true)) {
           await setDoc(
             userRef,
             {
@@ -104,7 +104,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setProfile({ ...data, role: 'admin', active: true });
         } else {
           setProfile(data);
-          if (data.role === 'admin') {
+          if (data.role === 'admin' && data.active !== false) {
             adminFlag = true;
           }
         }
@@ -119,7 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           uid: currentUser.uid,
           displayName: initialName,
           role: isBootstrapped ? 'admin' : 'employee',
-          active: true,
+          active: isBootstrapped,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         };
@@ -138,7 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           uid: currentUser.uid,
           displayName: currentUser.displayName || 'Usuario Akrobit',
           role: adminFlag ? 'admin' : 'employee',
-          active: true,
+          active: isBootstrapped || adminFlag,
         });
       } else {
         handleFirestoreError(error, OperationType.WRITE, `users/${currentUser.uid}`);

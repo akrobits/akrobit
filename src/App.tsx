@@ -48,7 +48,7 @@ class AppErrorBoundary extends React.Component<
 }
 
 function AkrobitRouter() {
-  const { user, isVerified, loading } = useAuth();
+  const { user, profile, isAdmin, isVerified, loading, refreshUserSession, logout } = useAuth();
   const [enteredFromSplash, setEnteredFromSplash] = useState<boolean>(() => {
     try {
       const hasSharedContact =
@@ -103,6 +103,52 @@ function AkrobitRouter() {
 
   if (!user || !isVerified) {
     return <LoginScreen onBackToSplash={handleBackToSplash} />;
+  }
+
+  const isApprovedMember = isAdmin || profile?.active === true;
+  if (!isApprovedMember) {
+    return (
+      <div className="min-h-[100dvh] bg-slate-50 flex flex-col">
+        <div className="w-full bg-[#145f96] border-b-4 border-[#df7729] flex items-center justify-center px-4 py-2.5">
+          <img
+            src="/akrobit-banner.png"
+            alt="Akrobit"
+            className="h-12 sm:h-14 w-auto object-contain"
+          />
+        </div>
+        <div className="flex-1 flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white border-2 border-[#145f96]/20 shadow-xl p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <img src="/akrobit-icon.png" alt="Akrobit" className="w-11 h-11 rounded-xl shrink-0" />
+              <div>
+                <h2 className="text-lg font-bold text-[#145f96]">Acceso pendiente de autorización</h2>
+                <p className="text-xs text-slate-500 truncate">{user.email}</p>
+              </div>
+            </div>
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Tu correo fue verificado, pero por seguridad corporativa de <strong>Akrobit</strong> un
+              administrador debe autorizar tu cuenta antes de poder acceder al sistema.
+            </p>
+            <div className="space-y-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => void refreshUserSession()}
+                className="w-full min-h-[46px] rounded-xl bg-[#a1d63e] hover:bg-[#8ec22f] text-slate-950 font-bold text-sm transition-colors cursor-pointer"
+              >
+                Verificar si ya fui autorizado
+              </button>
+              <button
+                type="button"
+                onClick={() => void logout()}
+                className="w-full min-h-[44px] rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 font-semibold text-sm transition-colors cursor-pointer"
+              >
+                Cerrar sesión
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return <MainDashboard />;

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Bell, Check, Edit3, X, XCircle } from 'lucide-react';
-import { doc, getDoc, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { Bell, Check, Edit3, ShieldCheck, UserCheck, UserX, Users, X, XCircle } from 'lucide-react';
+import { doc, getDoc, serverTimestamp, updateDoc, writeBatch } from 'firebase/firestore';
 import { OperationType, ORG_ID, db, handleFirestoreError } from '../lib/firebase';
 import {
   INTEREST_RATE_OPTIONS,
@@ -10,12 +10,13 @@ import {
 } from '../lib/finance';
 import { generateDocId } from '../lib/finance';
 import { syncClientPortalFromServer } from '../lib/clientPortal';
-import type { Credit, CreditTransaction, ModificationRequest } from '../types';
+import type { Credit, CreditTransaction, ModificationRequest, UserProfile } from '../types';
 
 interface AdminNotificationsModalProps {
   open: boolean;
   onClose: () => void;
   requests: ModificationRequest[];
+  teamUsers?: UserProfile[];
   adminUid: string;
   adminName: string;
 }
@@ -24,9 +25,11 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
   open,
   onClose,
   requests,
+  teamUsers = [],
   adminUid,
   adminName,
 }) => {
+  const [activeTab, setActiveTab] = useState<'requests' | 'team'>('requests');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [overrideAmount, setOverrideAmount] = useState('');
   const [overrideRate, setOverrideRate] = useState<number>(5);
@@ -36,6 +39,28 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
   if (!open) return null;
 
   const pendingRequests = requests.filter((r) => r.status === 'pending');
+  const managedMembers = teamUsers.filter((member) => member.uid !== adminUid);
+  const pendingMembersCount = managedMembers.filter((member) => !member.active).length;
+
+  const toggleMemberAccess = async (member: UserProfile, nextActive: boolean) => {
+    setBusyId(member.uid);
+    setFeedback('');
+    try {
+      await updateDoc(doc(db, 'users', member.uid), {
+        active: nextActive,
+        updatedAt: serverTimestamp(),
+      });
+      setFeedback(
+        nextActive
+          ? `Acceso autorizado para ${member.displayName}.`
+          : `Acceso bloqueado para ${member.displayName}.`
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${member.uid}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const applyModification = async (
     req: ModificationRequest,
@@ -170,7 +195,7 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
             <div>
               <h3 className="text-base font-bold">Aprobaciones de Administrador</h3>
               <p className="text-xs text-white/80">
-                {pendingRequests.length} solicitud(es) pendiente(s)
+                {pendingRequests.length} solicitud(es) · {pendingMembersCount} acceso(s) pendiente(s)
               </p>
             </div>
           </div>
@@ -184,6 +209,33 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
           </button>
         </div>
 
+        <div className="grid grid-cols-2 border-b border-slate-200 bg-slate-50 shrink-0">
+          <button
+            type="button"
+            onClick={() => setActiveTab('requests')}
+            className={`min-h-[44px] px-3 text-xs font-bold flex items-center justify-center gap-1.5 border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'requests'
+                ? 'border-[#145f96] text-[#145f96] bg-white'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Bell className="w-3.5 h-3.5" />
+            <span>Solicitudes ({pendingRequests.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('team')}
+            className={`min-h-[44px] px-3 text-xs font-bold flex items-center justify-center gap-1.5 border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'team'
+                ? 'border-[#145f96] text-[#145f96] bg-white'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            <span>Accesos ({pendingMembersCount})</span>
+          </button>
+        </div>
+
         <div className="p-4 sm:p-5 overflow-y-auto space-y-3 flex-1">
           {feedback && (
             <div className="rounded-xl bg-[#a1d63e]/15 border border-[#a1d63e]/40 px-3.5 py-2.5 text-xs font-semibold text-slate-800">
@@ -191,7 +243,59 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
             </div>
           )}
 
-          {pendingRequests.length === 0 ? (
+          {activeTab === 'team' ? (
+            managedMembers.length === 0 ? (
+              <div className="py-10 text-center space-y-2">
+                <ShieldCheck className="w-8 h-8 text-[#a1d63e] mx-auto" />
+                <p className="text-sm font-semibold text-slate-700">
+                  Solo tú tienes acceso registrado en este momento.
+                </p>
+                <p className="text-xs text-slate-500">
+                  Si alguien crea una cuenta de colaborador, quedará bloqueada aquí hasta que tú la autorices.
+                </p>
+              </div>
+            ) : (
+              managedMembers.map((member) => {
+                const isBusy = busyId === member.uid;
+                return (
+                  <div
+                    key={member.uid}
+                    className="rounded-2xl border border-slate-200 bg-slate-50 p-4 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-[#145f96] truncate">
+                        {member.displayName}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {member.active ? 'Acceso autorizado' : 'Bloqueado / Pendiente de autorización'}
+                      </p>
+                    </div>
+                    {member.active ? (
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => void toggleMemberAccess(member, false)}
+                        className="min-h-[40px] px-3 rounded-xl bg-[#d12925]/10 hover:bg-[#d12925]/20 text-[#d12925] text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0"
+                      >
+                        <UserX className="w-3.5 h-3.5" />
+                        <span>Bloquear</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => void toggleMemberAccess(member, true)}
+                        className="min-h-[40px] px-3 rounded-xl bg-[#a1d63e] hover:bg-[#8ec22f] text-slate-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0"
+                      >
+                        <UserCheck className="w-3.5 h-3.5" />
+                        <span>Autorizar</span>
+                      </button>
+                    )}
+                  </div>
+                );
+              })
+            )
+          ) : pendingRequests.length === 0 ? (
             <div className="py-10 text-center text-sm text-slate-500">
               No hay solicitudes de modificación pendientes en este momento.
             </div>

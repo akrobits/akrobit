@@ -2,7 +2,7 @@
 
 ## 1. Data Invariants
 1. **Authentication & Verification:** Every read/write operation requires `request.auth != null` and `request.auth.token.email_verified == true`.
-2. **RBAC / No Self-Admin Escalation:** Only `akrobits@gmail.com` (verified) or UIDs present in `/admins/{uid}` have administrator privileges. Standard registration at `/users/{uid}` is strictly locked to `role == 'employee'` and `active == true`; users cannot escalate their own `role` or `active` status.
+2. **RBAC & Admin-Approved Onboarding (Zero-Trust):** Only `akrobits@gmail.com` (verified) or UIDs present in `/admins/{uid}` have administrator privileges. Standard self-registration at `/users/{uid}` is strictly locked to `role == 'employee'` and `active == false`; users cannot escalate their own `role` or `active` status, and all business collections (`/clients`, `/credits`, `/transactions`, `/modificationRequests`) strictly require `isActiveMember()` for both `get` and `list`.
 3. **PII Isolation:** User email addresses are isolated in `/users/{userId}/private/{docId}` readable only by the owner or an administrator.
 4. **Path & Size Hardening:** All document IDs are validated by `isValidId(id)` (`^[a-zA-Z0-9_-]+$`, `<= 128`). All strings have strict `.size()` bounds.
 5. **Temporal Integrity:** `createdAt` and `updatedAt` must match `request.time` on creation/update; `createdAt` and `createdBy` are immutable after creation.
@@ -15,7 +15,9 @@
 1. **Unauthenticated read:** Unauthenticated `GET /clients/c1` -> `PERMISSION_DENIED`.
 2. **Unverified email write:** Signed-in user with `email_verified: false` creating `/clients/c1` -> `PERMISSION_DENIED`.
 3. **Self-admin privilege escalation:** Employee creating `/users/{uid}` with `role: "admin"` -> `PERMISSION_DENIED`.
-4. **Role tampering on update:** Employee updating `/users/{uid}` to set `role: "admin"` -> `PERMISSION_DENIED`.
+4. **Self-activation bypass:** Stranger creating `/users/{uid}` with `role: "employee", active: true` -> `PERMISSION_DENIED`.
+5. **Unapproved member listing:** Verified user with `active: false` running `LIST /clients` or `LIST /credits` -> `PERMISSION_DENIED`.
+6. **Role/active tampering on update:** Employee updating `/users/{uid}` to set `role: "admin"` or `active: true` -> `PERMISSION_DENIED`.
 5. **Shadow field injection:** Client payload on `/clients/c1` including extra ghost key `isVerified: true` -> `PERMISSION_DENIED`.
 6. **Admin registry spoofing:** Non-admin creating `/admins/{uid}` -> `PERMISSION_DENIED`.
 7. **PII cross-read:** Employee reading another user's `/users/{otherUid}/private/info` -> `PERMISSION_DENIED`.

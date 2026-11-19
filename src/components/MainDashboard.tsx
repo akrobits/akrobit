@@ -28,6 +28,7 @@ import type {
   CreditTransaction,
   InvoicePayload,
   ModificationRequest,
+  UserProfile,
 } from '../types';
 
 type ActiveSection = 'home' | 'credit_cash';
@@ -80,6 +81,7 @@ export const MainDashboard: React.FC = () => {
   const [credits, setCredits] = useState<Credit[]>([]);
   const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
   const [modRequests, setModRequests] = useState<ModificationRequest[]>([]);
+  const [teamUsers, setTeamUsers] = useState<UserProfile[]>([]);
   const [pendingWritesCount, setPendingWritesCount] = useState(0);
   const [syncError, setSyncError] = useState('');
 
@@ -103,7 +105,7 @@ export const MainDashboard: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!user || !user.emailVerified) return;
+    if (!user || !user.emailVerified || (!isAdmin && profile?.active !== true)) return;
     setSyncError('');
 
     const clientsQ = query(collection(db, 'clients'), where('orgId', '==', ORG_ID));
@@ -174,18 +176,41 @@ export const MainDashboard: React.FC = () => {
       }
     );
 
+    const unsubUsers = isAdmin
+      ? onSnapshot(
+          collection(db, 'users'),
+          (snap) => {
+            const list = snap.docs
+              .map((d) => d.data() as UserProfile)
+              .sort((a, b) => Number(a.active) - Number(b.active));
+            setTeamUsers(list);
+          },
+          (error) => {
+            console.error('Users snapshot error:', error);
+          }
+        )
+      : () => {};
+
     return () => {
       unsubClients();
       unsubCredits();
       unsubTx();
       unsubMods();
+      unsubUsers();
     };
-  }, [user, isAdmin]);
+  }, [user, isAdmin, profile?.active]);
 
   const pendingRequests = useMemo(
     () => modRequests.filter((r) => r.status === 'pending'),
     [modRequests]
   );
+
+  const pendingTeamCount = useMemo(
+    () => (isAdmin ? teamUsers.filter((member) => !member.active).length : 0),
+    [isAdmin, teamUsers]
+  );
+
+  const totalPendingAlerts = pendingRequests.length + pendingTeamCount;
 
   const summary = useMemo(() => {
     const activeClientCount = clients.filter((c) => c.active !== false).length;
@@ -238,9 +263,9 @@ export const MainDashboard: React.FC = () => {
                 className="relative min-h-[42px] min-w-[42px] flex items-center justify-center rounded-xl bg-white/10 hover:bg-white/20 transition-colors cursor-pointer"
               >
                 <Bell className="w-5 h-5" />
-                {pendingRequests.length > 0 && (
+                {totalPendingAlerts > 0 && (
                   <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-[#df7729] text-white text-[11px] font-bold flex items-center justify-center shadow">
-                    {pendingRequests.length}
+                    {totalPendingAlerts}
                   </span>
                 )}
               </button>
@@ -360,6 +385,7 @@ export const MainDashboard: React.FC = () => {
         open={notificationsOpen}
         onClose={() => setNotificationsOpen(false)}
         requests={modRequests}
+        teamUsers={teamUsers}
         adminUid={user?.uid || ''}
         adminName={displayName}
       />

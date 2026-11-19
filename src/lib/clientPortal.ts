@@ -28,8 +28,8 @@ export const AKROBIT_OFFICIAL_DOMAINS = [
   AKROBIT_PRIMARY_DOMAIN,
   AKROBIT_WWW_DOMAIN,
 ] as const;
-export const AKROBIT_CANONICAL_ORIGIN = `https://${AKROBIT_PRIMARY_DOMAIN}`;
-export const AKROBIT_PORTAL_URL = `${AKROBIT_CANONICAL_ORIGIN}/?mi-cuenta`;
+export const AKROBIT_CANONICAL_ORIGIN = `https://${AKROBIT_WWW_DOMAIN}`;
+export const AKROBIT_PORTAL_URL = `${AKROBIT_CANONICAL_ORIGIN}/micuenta`;
 
 export function isOfficialAkrobitDomain(hostname?: string): boolean {
   const target = (
@@ -65,8 +65,13 @@ export function isClientPortalRoute(): boolean {
   if (typeof window === 'undefined') return false;
   try {
     const params = new URLSearchParams(window.location.search);
-    const normalizedPath = window.location.pathname.replace(/\/+$/, '');
-    return params.has('mi-cuenta') || normalizedPath === '/mi-cuenta';
+    const normalizedPath = window.location.pathname.replace(/\/+$/, '').toLowerCase();
+    return (
+      params.has('micuenta') ||
+      params.has('mi-cuenta') ||
+      normalizedPath === '/micuenta' ||
+      normalizedPath === '/mi-cuenta'
+    );
   } catch {
     return false;
   }
@@ -74,6 +79,21 @@ export function isClientPortalRoute(): boolean {
 
 export function getPublicPortalUrl(): string {
   return AKROBIT_PORTAL_URL;
+}
+
+export function buildClientPortalAccessMessage(
+  clientName: string,
+  phone: string,
+  portalCode: string
+): string {
+  const safeName = clientName.trim() || 'estimado cliente';
+  return [
+    `Hola! *${safeName}*`,
+    'Consulta tu saldo y movimientos en tiempo real:',
+    getPublicPortalUrl(),
+    `Teléfono: ${phone}`,
+    `PIN: *${portalCode}*`,
+  ].join('\n');
 }
 
 /**

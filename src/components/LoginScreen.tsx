@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -11,12 +11,45 @@ import {
   RefreshCw,
   ShieldCheck,
   User,
-  UserPlus,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useBackHandler } from '../lib/backNavigation';
 
-type AuthView = 'login' | 'register' | 'forgot';
+type AuthView = 'login' | 'forgot';
+
+interface SecurityChallenge {
+  prompt: string;
+  answer: number;
+}
+
+function createSecurityChallenge(): SecurityChallenge {
+  const randInt = (min: number, max: number) =>
+    Math.floor(Math.random() * (max - min + 1)) + min;
+
+  const pattern = randInt(0, 3);
+  if (pattern === 0) {
+    const a = randInt(4, 9);
+    const b = randInt(3, 8);
+    const c = randInt(5, 19);
+    return { prompt: `(${a} × ${b}) + ${c}`, answer: a * b + c };
+  }
+  if (pattern === 1) {
+    const a = randInt(5, 9);
+    const b = randInt(4, 8);
+    const c = randInt(3, 14);
+    return { prompt: `(${a} × ${b}) - ${c}`, answer: a * b - c };
+  }
+  if (pattern === 2) {
+    const a = randInt(11, 24);
+    const b = randInt(4, 15);
+    const c = randInt(2, 3);
+    return { prompt: `(${a} + ${b}) × ${c}`, answer: (a + b) * c };
+  }
+  const a = randInt(12, 35);
+  const b = randInt(3, 8);
+  const c = randInt(3, 7);
+  return { prompt: `${a} + (${b} × ${c})`, answer: a + b * c };
+}
 
 interface LoginScreenProps {
   onBackToSplash: () => void;
@@ -27,7 +60,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onBackToSplash }) => {
     user,
     isVerified,
     signInWithEmail,
-    registerEmployee,
     sendResetEmail,
     resendVerificationEmail,
     refreshUserSession,
@@ -45,30 +77,24 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onBackToSplash }) => {
   });
   useBackHandler(menuOpen, () => setMenuOpen(false));
 
-  const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
-  // Security challenge for Password Recovery
+  // Complex 2-step security challenge for Password Recovery
   const [resetEmail, setResetEmail] = useState('');
-  const [challengeSeed, setChallengeSeed] = useState(() => Math.floor(Math.random() * 8) + 2);
-  const [challengeAdd, setChallengeAdd] = useState(() => Math.floor(Math.random() * 7) + 1);
+  const [challenge, setChallenge] = useState<SecurityChallenge>(() => createSecurityChallenge());
   const [challengeAnswer, setChallengeAnswer] = useState('');
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockedUntil, setLockedUntil] = useState<number>(0);
   const [resetSent, setResetSent] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [infoMsg, setInfoMsg] = useState('');
 
-  const expectedChallenge = useMemo(
-    () => challengeSeed + challengeAdd,
-    [challengeSeed, challengeAdd]
-  );
-
   const regenerateChallenge = () => {
-    setChallengeSeed(Math.floor(Math.random() * 8) + 2);
-    setChallengeAdd(Math.floor(Math.random() * 7) + 1);
+    setChallenge(createSecurityChallenge());
     setChallengeAnswer('');
   };
 
@@ -116,42 +142,39 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onBackToSplash }) => {
     }
   };
 
-  const handleRegisterSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg('');
-    setInfoMsg('');
-    if (!fullName.trim() || !email.trim() || password.length < 6) {
-      setErrorMsg('Ingresa nombre completo, correo válido y contraseña (mínimo 6 caracteres).');
-      return;
-    }
-    setSubmitting(true);
-    try {
-      await registerEmployee(fullName, email, password);
-      setInfoMsg(
-        'Cuenta creada. Te enviamos un correo de verificación para confirmar tu identidad antes de ingresar.'
-      );
-    } catch (err) {
-      setErrorMsg(mapAuthError(err));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const handleResetSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setInfoMsg('');
 
+    const now = Date.now();
+    if (lockedUntil > now) {
+      const waitSec = Math.ceil((lockedUntil - now) / 1000);
+      setErrorMsg(`Demasiados intentos fallidos. Espera ${waitSec} segundos para volver a intentar.`);
+      return;
+    }
+
     if (!resetEmail.trim() || !resetEmail.includes('@')) {
       setErrorMsg('Ingresa el correo electrónico asociado a tu cuenta.');
       return;
     }
-    if (Number(challengeAnswer) !== expectedChallenge) {
-      setErrorMsg('La verificación de seguridad es incorrecta. Intenta nuevamente.');
+
+    const parsedAnswer = Number(challengeAnswer.trim());
+    if (!challengeAnswer.trim() || !Number.isFinite(parsedAnswer) || parsedAnswer !== challenge.answer) {
+      const nextAttempts = failedAttempts + 1;
+      setFailedAttempts(nextAttempts);
+      if (nextAttempts >= 3) {
+        setLockedUntil(Date.now() + 30_000);
+        setFailedAttempts(0);
+        setErrorMsg('Verificación incorrecta 3 veces. Espera 30 segundos por seguridad.');
+      } else {
+        setErrorMsg(`Resultado incorrecto (intento ${nextAttempts} de 3). Resuelve la nueva operación.`);
+      }
       regenerateChallenge();
       return;
     }
 
+    setFailedAttempts(0);
     setSubmitting(true);
     try {
       await sendResetEmail(resetEmail);
@@ -287,14 +310,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onBackToSplash }) => {
               />
               <div>
                 <h1 className="text-xl font-bold text-[#145f96]">
-                  {view === 'login' && 'Inicio de Sesión'}
-                  {view === 'register' && 'Registro de Colaborador'}
-                  {view === 'forgot' && 'Recuperar Contraseña'}
+                  {view === 'login' ? 'Inicio de Sesión' : 'Recuperar Contraseña'}
                 </h1>
                 <p className="text-xs text-slate-500">
-                  {view === 'login' && 'Ingresa tus credenciales corporativas'}
-                  {view === 'register' && 'Alta segura con verificación de correo'}
-                  {view === 'forgot' && 'Verificación de identidad Akrobit'}
+                  {view === 'login'
+                    ? 'Ingresa tus credenciales corporativas'
+                    : 'Verificación de identidad Akrobit'}
                 </p>
               </div>
             </div>
@@ -318,38 +339,22 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onBackToSplash }) => {
                     aria-hidden="true"
                   />
                   <div className="absolute right-0 mt-1.5 w-56 rounded-xl bg-white border border-slate-200 shadow-xl py-1.5 z-20">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMenuOpen(false);
-                        setErrorMsg('');
-                        setInfoMsg('');
-                        setResetSent(false);
-                        setResetEmail(email);
-                        regenerateChallenge();
-                        setView('forgot');
-                      }}
-                      className="w-full px-4 py-2.5 text-left text-sm font-medium text-slate-800 hover:bg-[#df7729]/10 hover:text-[#145f96] flex items-center gap-2.5 cursor-pointer"
-                    >
-                      <KeyRound className="w-4 h-4 text-[#df7729]" />
-                      <span>Olvidé contraseña</span>
-                    </button>
-
-                    <div className="my-1 border-t border-slate-100" />
-
-                    {view !== 'register' ? (
+                    {view === 'login' ? (
                       <button
                         type="button"
                         onClick={() => {
                           setMenuOpen(false);
                           setErrorMsg('');
                           setInfoMsg('');
-                          setView('register');
+                          setResetSent(false);
+                          setResetEmail(email);
+                          regenerateChallenge();
+                          setView('forgot');
                         }}
-                        className="w-full px-4 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-[#a1d63e]/15 hover:text-[#145f96] flex items-center gap-2.5 cursor-pointer"
+                        className="w-full px-4 py-2.5 text-left text-sm font-medium text-slate-800 hover:bg-[#df7729]/10 hover:text-[#145f96] flex items-center gap-2.5 cursor-pointer"
                       >
-                        <UserPlus className="w-4 h-4 text-[#a1d63e]" />
-                        <span>Crear cuenta empleado</span>
+                        <KeyRound className="w-4 h-4 text-[#df7729]" />
+                        <span>Olvidé contraseña</span>
                       </button>
                     ) : (
                       <button
@@ -358,6 +363,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onBackToSplash }) => {
                           setMenuOpen(false);
                           setErrorMsg('');
                           setInfoMsg('');
+                          setResetSent(false);
                           setView('login');
                         }}
                         className="w-full px-4 py-2.5 text-left text-sm font-medium text-slate-700 hover:bg-[#69b8e9]/10 hover:text-[#145f96] flex items-center gap-2.5 cursor-pointer"
@@ -441,96 +447,31 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onBackToSplash }) => {
               <button
                 type="submit"
                 disabled={submitting}
-                className="w-full min-h-[48px] rounded-xl bg-[#145f96] hover:bg-[#0e4670] disabled:opacity-60 text-white font-bold text-sm shadow-md transition-colors cursor-pointer flex items-center justify-center gap-2"
+                className="w-full min-h-[48px] rounded-xl bg-[#145f96] hover:bg-[#0e4670] disabled:opacity-60 text-white font-semibold text-base shadow-md transition-colors cursor-pointer flex items-center justify-center gap-2"
               >
-                <span>{submitting ? 'Verificando...' : 'Acceder a Akrobit'}</span>
+                {submitting ? (
+                  <span className="text-sm font-bold">Verificando...</span>
+                ) : (
+                  <>
+                    <span className="tracking-tight leading-none">Acceder a</span>
+                    <img
+                      src="/akrobit-logo-tight.png"
+                      alt="Akrobit"
+                      className="h-5 w-auto object-contain"
+                    />
+                  </>
+                )}
               </button>
             </form>
           )}
 
-          {/* VIEW 2: REGISTER EMPLOYEE */}
-          {view === 'register' && (
-            <form onSubmit={handleRegisterSubmit} className="space-y-4">
-              <div>
-                <label
-                  htmlFor="reg-name"
-                  className="block text-xs font-bold text-[#145f96] mb-1.5"
-                >
-                  Nombre completo
-                </label>
-                <input
-                  id="reg-name"
-                  type="text"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Ej. Carlos Mendoza"
-                  className="w-full min-h-[46px] rounded-xl border-2 border-[#145f96]/25 bg-slate-50/70 px-3.5 text-sm text-slate-900 focus:border-[#a1d63e] focus:bg-white focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="reg-email"
-                  className="block text-xs font-bold text-[#145f96] mb-1.5"
-                >
-                  Correo electrónico
-                </label>
-                <input
-                  id="reg-email"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="empleado@akrobit.com"
-                  className="w-full min-h-[46px] rounded-xl border-2 border-[#145f96]/25 bg-slate-50/70 px-3.5 text-sm text-slate-900 focus:border-[#69b8e9] focus:bg-white focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="reg-password"
-                  className="block text-xs font-bold text-[#145f96] mb-1.5"
-                >
-                  Contraseña (mín. 6 caracteres)
-                </label>
-                <input
-                  id="reg-password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full min-h-[46px] rounded-xl border-2 border-[#145f96]/25 bg-slate-50/70 px-3.5 text-sm text-slate-900 focus:border-[#df7729] focus:bg-white focus:outline-none"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full min-h-[48px] rounded-xl bg-[#df7729] hover:bg-[#c8641a] text-white font-bold text-sm shadow-md transition-colors cursor-pointer"
-              >
-                {submitting ? 'Registrando...' : 'Crear cuenta de Empleado'}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setErrorMsg('');
-                  setInfoMsg('');
-                  setView('login');
-                }}
-                className="w-full py-2 text-xs font-semibold text-[#145f96] hover:underline cursor-pointer"
-              >
-                Ya tengo cuenta · Volver al inicio de sesión
-              </button>
-            </form>
-          )}
-
-          {/* VIEW 3: FORGOT PASSWORD WITH SECURITY VERIFICATION */}
+          {/* VIEW 2: FORGOT PASSWORD WITH COMPLEX SECURITY VERIFICATION */}
           {view === 'forgot' && (
             <form onSubmit={handleResetSubmit} className="space-y-4">
               <div className="rounded-xl bg-[#145f96]/5 border border-[#145f96]/20 p-3.5 text-xs text-slate-700 leading-relaxed flex items-start gap-2.5">
                 <ShieldCheck className="w-5 h-5 text-[#145f96] shrink-0 mt-0.5" />
                 <span>
-                  Para proteger tu cuenta, completa la verificación de seguridad y enviaremos un
+                  Para proteger tu cuenta, resuelve la verificación de seguridad y enviaremos un
                   enlace único de cambio de contraseña a tu correo registrado.
                 </span>
               </div>
@@ -555,21 +496,59 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onBackToSplash }) => {
                 </div>
               </div>
 
-              <div>
-                <label
-                  htmlFor="reset-challenge"
-                  className="block text-xs font-bold text-[#145f96] mb-1.5"
+              <div className="rounded-xl border-2 border-[#145f96]/20 bg-slate-50 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label
+                    htmlFor="reset-challenge"
+                    className="text-xs font-bold text-[#145f96]"
+                  >
+                    Verificación de seguridad (2 pasos)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={regenerateChallenge}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-[#145f96] hover:text-[#df7729] transition-colors cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Otro reto</span>
+                  </button>
+                </div>
+
+                <div
+                  aria-label={`Operación de seguridad: ${challenge.prompt}`}
+                  className="rounded-xl bg-[#145f96] px-4 py-2.5 flex items-center justify-center relative overflow-hidden select-none"
                 >
-                  Verificación de seguridad: ¿Cuánto es {challengeSeed} + {challengeAdd}?
-                </label>
+                  <svg
+                    viewBox="0 0 260 44"
+                    className="w-full max-w-[260px] h-10"
+                    role="img"
+                    aria-label={challenge.prompt}
+                  >
+                    <line x1="10" y1="8" x2="250" y2="36" stroke="#69b8e9" strokeOpacity="0.22" strokeWidth="1.5" />
+                    <line x1="20" y1="38" x2="240" y2="8" stroke="#df7729" strokeOpacity="0.24" strokeWidth="1.5" />
+                    <text
+                      x="130"
+                      y="29"
+                      textAnchor="middle"
+                      fill="#ffffff"
+                      fontSize="20"
+                      fontWeight="700"
+                      fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+                      letterSpacing="2"
+                    >
+                      {challenge.prompt} = ?
+                    </text>
+                  </svg>
+                </div>
+
                 <input
                   id="reset-challenge"
                   type="number"
                   inputMode="numeric"
                   value={challengeAnswer}
                   onChange={(e) => setChallengeAnswer(e.target.value)}
-                  placeholder="Escribe el resultado"
-                  className="w-full min-h-[46px] rounded-xl border-2 border-[#145f96]/25 bg-slate-50/70 px-3.5 text-sm text-slate-900 tabular-nums focus:border-[#a1d63e] focus:bg-white focus:outline-none"
+                  placeholder="Ingresa el resultado exacto"
+                  className="w-full min-h-[46px] rounded-xl border-2 border-[#145f96]/25 bg-white px-3.5 text-sm font-mono font-bold text-slate-900 tabular-nums focus:border-[#a1d63e] focus:outline-none"
                 />
               </div>
 

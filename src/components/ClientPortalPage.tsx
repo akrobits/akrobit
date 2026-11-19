@@ -23,7 +23,11 @@ import {
   normalizePortalPhoneInput,
 } from '../lib/clientPortal';
 import { useBackHandler } from '../lib/backNavigation';
-import { buildWhatsAppBusinessLink, formatCurrency, isAndroidDevice } from '../lib/finance';
+import {
+  buildWhatsAppLink,
+  formatCurrency,
+  isAndroidDevice,
+} from '../lib/finance';
 import type { ClientPortalSnapshot } from '../types';
 
 const PORTAL_SESSION_KEY = 'akrobit_client_portal_key';
@@ -145,12 +149,16 @@ export const ClientPortalPage: React.FC = () => {
   const inIframe = typeof window !== 'undefined' && window.top !== window.self;
   const openInBlankTab = !isAndroid || inIframe;
 
-  const forgotCodeWaLink = buildWhatsAppBusinessLink(
-    AKROBIT_BUSINESS_PHONE,
-    'Hola Akrobit, solicito mi código de acceso de 6 dígitos para consultar mi estado de cuenta.'
-  );
+  const normalizedTypedPhone = normalizePortalPhoneInput(phoneInput);
+  const hasTypedPhone = normalizedTypedPhone.replace(/\D/g, '').length >= 8;
 
-  const clientSupportWaLink = buildWhatsAppBusinessLink(
+  const forgotCodeMessage = hasTypedPhone
+    ? `Hola Akrobit, olvidé mi PIN de 6 dígitos para consultar mi cuenta en el portal. Mi número registrado es: ${normalizedTypedPhone}. ¿Me lo pueden reenviar, por favor?`
+    : 'Hola Akrobit, solicito mi PIN de 6 dígitos para consultar mi estado de cuenta en el portal.';
+
+  const forgotCodeWaLink = buildWhatsAppLink(AKROBIT_BUSINESS_PHONE, forgotCodeMessage);
+
+  const clientSupportWaLink = buildWhatsAppLink(
     AKROBIT_BUSINESS_PHONE,
     portal
       ? `Hola Akrobit, soy ${portal.clientName}. Escribo respecto a mi estado de cuenta.`
@@ -263,16 +271,21 @@ export const ClientPortalPage: React.FC = () => {
               </form>
 
               <div className="border-t border-slate-100 pt-4 text-center space-y-2">
-                <p className="text-xs text-slate-500">¿No tienes o olvidaste tu código secreto?</p>
+                <p className="text-xs text-slate-500">¿No tienes u olvidaste tu PIN de acceso?</p>
                 <a
                   href={forgotCodeWaLink}
                   target={openInBlankTab ? '_blank' : undefined}
                   rel={openInBlankTab ? 'noopener noreferrer' : undefined}
-                  className="w-full min-h-[44px] rounded-xl bg-[#25D366]/15 hover:bg-[#25D366]/25 border border-[#25D366]/40 text-slate-900 font-bold text-xs flex items-center justify-center gap-2 transition-colors"
+                  className="w-full min-h-[44px] rounded-xl bg-[#25D366]/15 hover:bg-[#25D366]/25 border border-[#25D366]/40 text-slate-900 font-bold text-xs flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0 px-3"
                 >
-                  <MessageCircle className="w-4 h-4 text-[#15803d]" />
-                  <span>Solicitar código por WhatsApp</span>
+                  <MessageCircle className="w-4 h-4 text-[#15803d] shrink-0" />
+                  <span>Solicitar PIN por WhatsApp</span>
                 </a>
+                <p className="text-[11px] text-slate-500 leading-snug">
+                  {hasTypedPhone
+                    ? `Tu número (${normalizedTypedPhone}) se incluirá automáticamente en el mensaje.`
+                    : 'Escribe tu número arriba antes de tocar el botón para enviarlo ya incluido.'}
+                </p>
               </div>
             </div>
           </div>
