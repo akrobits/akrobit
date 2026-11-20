@@ -2,6 +2,14 @@ export type CurrencyCode = 'NIO' | 'USD';
 
 export type UserRole = 'admin' | 'employee';
 
+export type PaymentMethod = 'cash' | 'bank';
+
+export type ProfitType = 'amount' | 'percent';
+
+export type ProductCategory = 'recharge' | 'general';
+
+export type RechargeCarrier = 'claro' | 'tigo' | 'none';
+
 export interface UserProfile {
   uid: string;
   displayName: string;
@@ -22,6 +30,7 @@ export interface Client {
   notes?: string;
   portalCode?: string;
   portalKey?: string;
+  moduleId?: string;
   portfolioStatus?: PortfolioStatus;
   sourceModule?: string;
   castigadaAt?: unknown;
@@ -34,12 +43,13 @@ export interface Client {
   updatedAt?: unknown;
 }
 
-export type CreditInterestMode = 'prorated_daily' | 'pre_added';
+export type CreditInterestMode = 'prorated_daily' | 'pre_added' | 'closed';
 
 export interface Credit {
   id: string;
   clientId: string;
   clientName: string;
+  moduleId?: string;
   currency: CurrencyCode;
   principal: number;
   interestRate: number;
@@ -63,18 +73,49 @@ export interface CreditTransaction {
   id: string;
   creditId: string;
   clientId: string;
-  type: 'credit' | 'payment' | 'adjustment';
+  moduleId?: string;
+  type: 'credit' | 'sale' | 'payment' | 'adjustment';
   currency: CurrencyCode;
   amount: number;
   interestRate: number;
   previousBalance: number;
   newBalance: number;
+  paymentMethod?: PaymentMethod;
+  productId?: string;
+  productName?: string;
+  quantitySold?: number;
+  costAmount?: number;
+  profitType?: ProfitType;
+  profitValue?: number;
+  profitAmount?: number;
+  commissionAmount?: number;
+  netProfitAmount?: number;
   note?: string;
   orgId: 'akrobit';
   createdBy: string;
   createdByName: string;
   createdAt?: unknown;
   hasPendingWrites?: boolean;
+}
+
+export interface Product {
+  id: string;
+  name: string;
+  barcode?: string;
+  category: ProductCategory;
+  carrier?: RechargeCarrier;
+  currency: CurrencyCode;
+  quantity: number;
+  costPrice: number;
+  salesCommission: number;
+  profitType: ProfitType;
+  profitValue: number;
+  orgId: 'akrobit';
+  createdBy: string;
+  createdByName?: string;
+  active: boolean;
+  createdAt?: unknown;
+  updatedAt?: unknown;
 }
 
 export interface ModificationRequest {
@@ -84,6 +125,7 @@ export interface ModificationRequest {
   transactionId?: string;
   clientId: string;
   clientName: string;
+  moduleId?: string;
   currency: CurrencyCode;
   oldValue: number;
   newValue: number;
@@ -117,12 +159,14 @@ export interface PortalCreditItem {
 }
 
 export interface PortalTransactionItem {
-  type: 'credit' | 'payment' | 'adjustment';
+  type: 'credit' | 'sale' | 'payment' | 'adjustment';
   currency: CurrencyCode;
   amount: number;
   interestRate: number;
   previousBalance: number;
   newBalance: number;
+  paymentMethod?: PaymentMethod;
+  productName?: string;
   note?: string;
   dateLabel: string;
 }
@@ -131,6 +175,8 @@ export interface ClientPortalSnapshot {
   id: string;
   clientId: string;
   clientName: string;
+  moduleId?: string;
+  moduleLabel?: string;
   orgId: 'akrobit';
   totalNio: number;
   totalUsd: number;
@@ -149,10 +195,12 @@ export interface ConsolidatedCreditItem {
   dateLabel: string;
   daysElapsed?: number;
   accruedInterest?: number;
+  interestMode?: CreditInterestMode;
 }
 
 export interface InvoicePayload {
-  kind: 'credit' | 'payment' | 'consolidated';
+  kind: 'credit' | 'sale' | 'payment' | 'consolidated';
+  moduleLabel?: string;
   clientName: string;
   clientPhone: string;
   currency: CurrencyCode;
@@ -169,6 +217,9 @@ export interface InvoicePayload {
   projected30DayTotal?: number;
   interestMode?: CreditInterestMode;
   creditLabel?: string;
+  productName?: string;
+  quantitySold?: number;
+  paymentMethod?: PaymentMethod;
   consolidatedItems?: ConsolidatedCreditItem[];
   totalNio?: number;
   totalUsd?: number;

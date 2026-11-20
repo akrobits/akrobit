@@ -142,6 +142,11 @@
           "minLength": 1,
           "maxLength": 60
         },
+        "moduleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
         "castigadaAt": {
           "type": "string",
           "format": "date-time"
@@ -212,7 +217,12 @@
         },
         "interestMode": {
           "type": "string",
-          "enum": ["prorated_daily", "pre_added"]
+          "enum": ["prorated_daily", "pre_added", "closed"]
+        },
+        "moduleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
         },
         "lastPaymentAt": {
           "type": "string",
@@ -294,7 +304,7 @@
         },
         "type": {
           "type": "string",
-          "enum": ["credit", "payment", "adjustment"]
+          "enum": ["credit", "payment", "adjustment", "sale"]
         },
         "currency": {
           "type": "string",
@@ -316,6 +326,48 @@
           "type": "string",
           "minLength": 0,
           "maxLength": 240
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["cash", "bank"]
+        },
+        "moduleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "productId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "productName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "quantitySold": {
+          "type": "number"
+        },
+        "costAmount": {
+          "type": "number"
+        },
+        "profitType": {
+          "type": "string",
+          "enum": ["amount", "percent"]
+        },
+        "profitValue": {
+          "type": "number"
+        },
+        "profitAmount": {
+          "type": "number"
+        },
+        "commissionAmount": {
+          "type": "number"
+        },
+        "netProfitAmount": {
+          "type": "number"
         },
         "orgId": {
           "type": "string",
@@ -415,6 +467,11 @@
           "type": "string",
           "enum": ["pending", "approved", "rejected", "corrected"]
         },
+        "moduleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
         "orgId": {
           "type": "string",
           "enum": ["akrobit"]
@@ -511,6 +568,16 @@
           "type": "string",
           "enum": ["active", "castigada"]
         },
+        "moduleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "moduleLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time"
@@ -525,6 +592,95 @@
         "totalUsd",
         "activeCredits",
         "recentTransactions",
+        "updatedAt"
+      ]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Inventory product or telecom recharge stock item with cost, sales commission, and flexible profit configuration.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "barcode": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 80
+        },
+        "category": {
+          "type": "string",
+          "enum": ["recharge", "general"]
+        },
+        "carrier": {
+          "type": "string",
+          "enum": ["claro", "tigo", "none"]
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["NIO", "USD"]
+        },
+        "quantity": {
+          "type": "number"
+        },
+        "costPrice": {
+          "type": "number"
+        },
+        "salesCommission": {
+          "type": "number"
+        },
+        "profitType": {
+          "type": "string",
+          "enum": ["amount", "percent"]
+        },
+        "profitValue": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "orgId": {
+          "type": "string",
+          "enum": ["akrobit"]
+        },
+        "createdBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "category",
+        "currency",
+        "quantity",
+        "costPrice",
+        "salesCommission",
+        "profitType",
+        "profitValue",
+        "orgId",
+        "createdBy",
+        "createdAt",
         "updatedAt"
       ]
     }
@@ -544,15 +700,15 @@
     },
     "/clients/{clientId}": {
       "schema": { "$ref": "#/entities/Client" },
-      "description": "Credit Cash customer directory."
+      "description": "Multi-module customer directory (Credit Cash, Maestros, and future modules)."
     },
     "/credits/{creditId}": {
       "schema": { "$ref": "#/entities/Credit" },
-      "description": "Credit Cash active and settled loans."
+      "description": "Active and settled loans and closed-credit accounts."
     },
     "/transactions/{transactionId}": {
       "schema": { "$ref": "#/entities/CreditTransaction" },
-      "description": "Immutable ledger of credit issuances, balance payments, and approved corrections."
+      "description": "Ledger of credit issuances, closed-credit product sales, payments (Cash/Bank), and approved corrections."
     },
     "/modificationRequests/{requestId}": {
       "schema": { "$ref": "#/entities/ModificationRequest" },
@@ -561,6 +717,10 @@
     "/clientPortals/{portalKey}": {
       "schema": { "$ref": "#/entities/ClientPortal" },
       "description": "Read-only statement portal snapshots accessed strictly by exact 64-char SHA-256 lookup key."
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Central Akrobit product and telecom recharge inventory."
     }
   }
 }

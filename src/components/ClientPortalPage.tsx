@@ -215,7 +215,9 @@ export const ClientPortalPage: React.FC = () => {
           : 0;
 
         if (hasActivity) {
-          if (cr.interestMode === 'prorated_daily') {
+          if (cr.interestMode === 'closed') {
+            accruedInterest = 0;
+          } else if (cr.interestMode === 'prorated_daily') {
             accruedInterest = calculateProratedInterestCeil(
               cr.currentBalance,
               cr.interestRate,
@@ -464,6 +466,9 @@ export const ClientPortalPage: React.FC = () => {
                     }
 
                     if (tier === 'red') {
+                      const hasOnlyClosed =
+                        livePortalSummary.liveCredits.length > 0 &&
+                        livePortalSummary.liveCredits.every((c) => c.interestMode === 'closed');
                       return (
                         <div className="rounded-xl bg-[#d12925] px-4 py-3 flex items-start gap-2.5 shadow-sm">
                           <AlertTriangle className="w-5 h-5 text-white shrink-0 mt-0.5" />
@@ -472,7 +477,9 @@ export const ClientPortalPage: React.FC = () => {
                               Llevas {days} días sin realizar abono o pago
                             </p>
                             <p className="text-white/90 mt-0.5">
-                              El interés se calcula proporcionalmente sobre tu saldo de capital hasta el día exacto de tu pago.
+                              {hasOnlyClosed
+                                ? 'Por favor comunícate con Akrobit para poner al día tu cuenta.'
+                                : 'El interés se calcula proporcionalmente sobre tu saldo de capital hasta el día exacto de tu pago.'}
                             </p>
                           </div>
                         </div>
@@ -556,7 +563,9 @@ export const ClientPortalPage: React.FC = () => {
                               </span>
                             </div>
                             <p className="text-xs text-slate-500">
-                              {cr.dateLabel} · Tasa mensual: {cr.interestRate}% s/saldo
+                              {cr.interestMode === 'closed'
+                                ? `${cr.dateLabel} · Crédito cerrado (sin interés mensual)`
+                                : `${cr.dateLabel} · Tasa mensual: ${cr.interestRate}% s/saldo`}
                             </p>
                           </div>
 
@@ -570,32 +579,34 @@ export const ClientPortalPage: React.FC = () => {
                           </div>
                         </div>
 
-                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 rounded-xl bg-slate-50/90 border border-slate-200/80 px-3 py-2 text-[11px]">
-                          <div>
-                            <span className="text-slate-500 block">Capital vigente</span>
-                            <span className="font-mono font-bold text-slate-800 tabular-nums">
-                              {formatCurrency(cr.currentBalance, cr.currency)}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 block">
-                              {cr.isFrozen
-                                ? `Interés congelado (${cr.daysElapsed}d)`
-                                : `Interés al día (${cr.daysElapsed}d)`}
-                            </span>
-                            <span className={`font-mono font-bold tabular-nums ${tierTextCls}`}>
-                              + {formatCurrency(cr.accruedInterest, cr.currency)}
-                            </span>
-                          </div>
-                          {!cr.isFrozen && cr.interestMode === 'prorated_daily' && cr.projected30DayTotal ? (
-                            <div className="col-span-2 sm:col-span-1">
-                              <span className="text-slate-500 block">Ref. a 30 días</span>
-                              <span className="font-mono font-semibold text-[#145f96] tabular-nums">
-                                {formatCurrency(cr.projected30DayTotal, cr.currency)}
+                        {cr.interestMode !== 'closed' && (
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 rounded-xl bg-slate-50/90 border border-slate-200/80 px-3 py-2 text-[11px]">
+                            <div>
+                              <span className="text-slate-500 block">Capital vigente</span>
+                              <span className="font-mono font-bold text-slate-800 tabular-nums">
+                                {formatCurrency(cr.currentBalance, cr.currency)}
                               </span>
                             </div>
-                          ) : null}
-                        </div>
+                            <div>
+                              <span className="text-slate-500 block">
+                                {cr.isFrozen
+                                  ? `Interés congelado (${cr.daysElapsed}d)`
+                                  : `Interés al día (${cr.daysElapsed}d)`}
+                              </span>
+                              <span className={`font-mono font-bold tabular-nums ${tierTextCls}`}>
+                                + {formatCurrency(cr.accruedInterest, cr.currency)}
+                              </span>
+                            </div>
+                            {!cr.isFrozen && cr.interestMode === 'prorated_daily' && cr.projected30DayTotal ? (
+                              <div className="col-span-2 sm:col-span-1">
+                                <span className="text-slate-500 block">Ref. a 30 días</span>
+                                <span className="font-mono font-semibold text-[#145f96] tabular-nums">
+                                  {formatCurrency(cr.projected30DayTotal, cr.currency)}
+                                </span>
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -628,11 +639,13 @@ export const ClientPortalPage: React.FC = () => {
                     >
                       <div className="min-w-0">
                         <p className="font-bold text-slate-900">
-                          {tx.type === 'credit'
-                            ? `Crédito otorgado (${tx.interestRate}%)`
-                            : tx.type === 'payment'
-                              ? 'Abono realizado'
-                              : 'Ajuste de registro'}
+                          {tx.type === 'sale'
+                            ? tx.productName || 'Compra registrada'
+                            : tx.type === 'credit'
+                              ? `Crédito otorgado (${tx.interestRate}%)`
+                              : tx.type === 'payment'
+                                ? 'Abono realizado'
+                                : 'Ajuste de registro'}
                         </p>
                         <p className="text-slate-500">{tx.dateLabel}</p>
                         {tx.note && <p className="text-slate-500 truncate">{tx.note}</p>}

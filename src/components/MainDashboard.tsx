@@ -4,8 +4,10 @@ import {
   Bell,
   ChevronRight,
   CreditCard,
+  GraduationCap,
   Layers,
   LogOut,
+  Package,
 } from 'lucide-react';
 import {
   collection,
@@ -28,7 +30,9 @@ import {
   round2,
 } from '../lib/finance';
 import { AdminNotificationsModal } from './AdminNotificationsModal';
+import { ClosedCreditModule } from './ClosedCreditModule';
 import { CreditCashModule } from './CreditCashModule';
+import { InventoryModule } from './InventoryModule';
 import { OfflineIndicator, PWAInstallButton } from './PWAControls';
 import { WhatsAppInvoiceModal } from './WhatsAppInvoiceModal';
 import { type ContactCandidate } from '../lib/contactsAdapter';
@@ -40,14 +44,13 @@ import type {
   CreditTransaction,
   InvoicePayload,
   ModificationRequest,
+  Product,
   UserProfile,
 } from '../types';
 
-type ActiveSection = 'home' | 'credit_cash' | 'cartera_castigada';
+type ActiveSection = 'home' | 'credit_cash' | 'maestros' | 'inventario' | 'cartera_castigada';
 
 const UPCOMING_MODULES = [
-  { id: 'mod_1', label: 'Módulo 2' },
-  { id: 'mod_2', label: 'Módulo 3' },
   { id: 'mod_3', label: 'Módulo 4' },
   { id: 'mod_4', label: 'Módulo 5' },
 ] as const;
@@ -65,7 +68,14 @@ export const MainDashboard: React.FC = () => {
   const [section, setSectionState] = useState<ActiveSection>(() => {
     try {
       const saved = sessionStorage.getItem('akrobit_section');
-      if (saved === 'credit_cash' || saved === 'cartera_castigada') return saved;
+      if (
+        saved === 'credit_cash' ||
+        saved === 'maestros' ||
+        saved === 'inventario' ||
+        saved === 'cartera_castigada'
+      ) {
+        return saved;
+      }
       return 'home';
     } catch {
       return 'home';
@@ -91,9 +101,11 @@ export const MainDashboard: React.FC = () => {
     }
     await logout();
   };
+
   const [clients, setClients] = useState<Client[]>([]);
   const [credits, setCredits] = useState<Credit[]>([]);
   const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [modRequests, setModRequests] = useState<ModificationRequest[]>([]);
   const [teamUsers, setTeamUsers] = useState<UserProfile[]>([]);
   const [clientsServerSynced, setClientsServerSynced] = useState(false);
@@ -104,9 +116,7 @@ export const MainDashboard: React.FC = () => {
   const [activeInvoice, setActiveInvoice] = useState<InvoicePayload | null>(null);
   const [incomingSharedContacts, setIncomingSharedContacts] = useState<ContactCandidate[]>([]);
 
-  useBackHandler(section === 'credit_cash' || section === 'cartera_castigada', () =>
-    setSection('home')
-  );
+  useBackHandler(section !== 'home', () => setSection('home'));
   useBackHandler(notificationsOpen, () => setNotificationsOpen(false));
 
   useEffect(() => {
@@ -157,6 +167,7 @@ export const MainDashboard: React.FC = () => {
     const clientsQ = query(collection(db, 'clients'), where('orgId', '==', ORG_ID));
     const creditsQ = query(collection(db, 'credits'), where('orgId', '==', ORG_ID));
     const txQ = query(collection(db, 'transactions'), where('orgId', '==', ORG_ID));
+    const productsQ = query(collection(db, 'products'), where('orgId', '==', ORG_ID));
 
     const modQ = isAdmin
       ? query(collection(db, 'modificationRequests'), where('orgId', '==', ORG_ID))
@@ -212,6 +223,16 @@ export const MainDashboard: React.FC = () => {
       }
     );
 
+    const unsubProducts = onSnapshot(
+      productsQ,
+      (snap) => {
+        setProducts(snap.docs.map((d) => d.data() as Product));
+      },
+      (error) => {
+        console.error('Products snapshot error:', error);
+      }
+    );
+
     const unsubMods = onSnapshot(
       modQ,
       (snap) => {
@@ -244,6 +265,7 @@ export const MainDashboard: React.FC = () => {
       unsubClients();
       unsubCredits();
       unsubTx();
+      unsubProducts();
       unsubMods();
       unsubUsers();
     };
@@ -319,17 +341,26 @@ export const MainDashboard: React.FC = () => {
     [modRequests]
   );
 
-  const overdueAlerts = useMemo(
-    () =>
-      buildOverdueClientAlerts({
-        moduleId: 'credit_cash',
-        moduleLabel: 'Credit Cash',
-        clients,
-        credits,
-        transactions,
-      }),
-    [clients, credits, transactions]
-  );
+  // Bell alerts combine 30+ day overdue clients from Credit Cash and Maestros (excluding Cartera Castigada)
+  const overdueAlerts = useMemo(() => {
+    const ccAlerts = buildOverdueClientAlerts({
+      moduleId: 'credit_cash',
+      moduleLabel: 'Credit Cash',
+      clients,
+      credits,
+      transactions,
+    });
+    const maestrosAlerts = buildOverdueClientAlerts({
+      moduleId: 'maestros',
+      moduleLabel: 'Maestros',
+      clients,
+      credits,
+      transactions,
+    });
+    return [...ccAlerts, ...maestrosAlerts].sort(
+      (a, b) => b.maxDaysWithoutPayment - a.maxDaysWithoutPayment
+    );
+  }, [clients, credits, transactions]);
 
   const pendingTeamCount = useMemo(
     () => (isAdmin ? teamUsers.filter((member) => !member.active).length : 0),
@@ -340,48 +371,75 @@ export const MainDashboard: React.FC = () => {
     pendingRequests.length + overdueAlerts.length + pendingTeamCount;
 
   const summary = useMemo(() => {
-    const activeClientsList = clients.filter(
-      (c) => c.active !== false && c.portfolioStatus !== 'castigada'
+    const ccClients = clients.filter(
+      (c) =>
+        (c.moduleId || 'credit_cash') === 'credit_cash' &&
+        c.active !== false &&
+        c.portfolioStatus !== 'castigada'
     );
-    const castigadaClientsList = clients.filter(
+    const maestrosClients = clients.filter(
+      (c) =>
+        c.moduleId === 'maestros' &&
+        c.active !== false &&
+        c.portfolioStatus !== 'castigada'
+    );
+    const castigadaClients = clients.filter(
       (c) => c.active !== false && c.portfolioStatus === 'castigada'
     );
-    const activeClientIds = new Set(activeClientsList.map((c) => c.id));
-    const castigadaClientIds = new Set(castigadaClientsList.map((c) => c.id));
+
+    const ccIds = new Set(ccClients.map((c) => c.id));
+    const maestrosIds = new Set(maestrosClients.map((c) => c.id));
+    const castigadaIds = new Set(castigadaClients.map((c) => c.id));
 
     const txsByClient = new Map<string, CreditTransaction[]>();
     for (const tx of transactions) {
-      if (!activeClientIds.has(tx.clientId) && !castigadaClientIds.has(tx.clientId)) continue;
+      if (!ccIds.has(tx.clientId) && !maestrosIds.has(tx.clientId) && !castigadaIds.has(tx.clientId)) {
+        continue;
+      }
       const list = txsByClient.get(tx.clientId) || [];
       list.push(tx);
       txsByClient.set(tx.clientId, list);
     }
 
-    let activeNio = 0;
-    let activeUsd = 0;
+    let ccNio = 0;
+    let ccUsd = 0;
+    let maestrosNio = 0;
+    let maestrosUsd = 0;
     let castigadaNio = 0;
     let castigadaUsd = 0;
+
     for (const c of credits) {
       if (c.status !== 'active' || c.currentBalance <= 0) continue;
-      if (activeClientIds.has(c.clientId)) {
+      if (ccIds.has(c.clientId)) {
         const live = calculateLiveCreditStatus(c, txsByClient.get(c.clientId) || []);
-        if (c.currency === 'NIO') activeNio = round2(activeNio + live.totalDueToday);
-        else activeUsd = round2(activeUsd + live.totalDueToday);
-      } else if (castigadaClientIds.has(c.clientId)) {
+        if (c.currency === 'NIO') ccNio = round2(ccNio + live.totalDueToday);
+        else ccUsd = round2(ccUsd + live.totalDueToday);
+      } else if (maestrosIds.has(c.clientId)) {
+        const live = calculateLiveCreditStatus(c, txsByClient.get(c.clientId) || []);
+        if (c.currency === 'NIO') maestrosNio = round2(maestrosNio + live.totalDueToday);
+        else maestrosUsd = round2(maestrosUsd + live.totalDueToday);
+      } else if (castigadaIds.has(c.clientId)) {
         const live = calculateLiveCreditStatus(c, txsByClient.get(c.clientId) || []);
         if (c.currency === 'NIO') castigadaNio = round2(castigadaNio + live.totalDueToday);
         else castigadaUsd = round2(castigadaUsd + live.totalDueToday);
       }
     }
+
+    const activeProductsCount = products.filter((p) => p.active !== false).length;
+
     return {
-      activeClientCount: activeClientsList.length,
-      activeNio,
-      activeUsd,
-      castigadaClientCount: castigadaClientsList.length,
+      ccClientCount: ccClients.length,
+      ccNio,
+      ccUsd,
+      maestrosClientCount: maestrosClients.length,
+      maestrosNio,
+      maestrosUsd,
+      activeProductsCount,
+      castigadaClientCount: castigadaClients.length,
       castigadaNio,
       castigadaUsd,
     };
-  }, [clients, credits, transactions]);
+  }, [clients, credits, transactions, products]);
 
   useEffect(() => {
     if (!isAdmin || transactions.length === 0) return;
@@ -409,7 +467,7 @@ export const MainDashboard: React.FC = () => {
 
   return (
     <div className="min-h-[100dvh] bg-slate-50 flex flex-col">
-      {/* Compact Top Header with Official Akrobit Logo (no white text) */}
+      {/* Compact Top Header with Official Akrobit Logo */}
       <header className="sticky top-0 z-30 bg-[#145f96] text-white shadow-sm">
         <div className="mx-auto max-w-6xl px-3 sm:px-6 h-14 flex items-center justify-between gap-3">
           <button
@@ -488,7 +546,7 @@ export const MainDashboard: React.FC = () => {
               />
             </div>
 
-            {/* 2. Pequeño hilo blanco para que no se vea pegado */}
+            {/* 2. Pequeño hilo blanco */}
             <div className="w-full h-1.5 bg-white" />
 
             {/* 3. Franja horizontal angosta todo el ancho: Credit Cash */}
@@ -507,13 +565,13 @@ export const MainDashboard: React.FC = () => {
                       Credit Cash
                     </h2>
                     <p className="text-xs text-white/80 truncate">
-                      {summary.activeClientCount} cliente(s) ·{' '}
+                      {summary.ccClientCount} cliente(s) ·{' '}
                       <span className="font-mono text-[#a1d63e]">
-                        {formatCurrency(summary.activeNio, 'NIO')}
+                        {formatCurrency(summary.ccNio, 'NIO')}
                       </span>{' '}
                       ·{' '}
                       <span className="font-mono text-[#69b8e9]">
-                        {formatCurrency(summary.activeUsd, 'USD')}
+                        {formatCurrency(summary.ccUsd, 'USD')}
                       </span>
                     </p>
                   </div>
@@ -528,9 +586,50 @@ export const MainDashboard: React.FC = () => {
               </button>
             </div>
 
-            {/* 4. Cuadrícula 2 en 2 hacia abajo preparada para los próximos módulos */}
+            {/* 4. Cuadrícula 2 en 2: Maestros | Inventario | Módulo 4 | Módulo 5 */}
             <div className="px-3 sm:px-6 pt-5 space-y-4">
               <div className="grid grid-cols-2 gap-3 sm:gap-4">
+                {/* Tile 1: Maestros */}
+                <button
+                  type="button"
+                  onClick={() => setSection('maestros')}
+                  className="aspect-square sm:aspect-[4/3] rounded-2xl border-2 border-[#145f96]/20 hover:border-[#69b8e9] bg-white shadow-sm hover:shadow-md active:scale-[0.98] flex flex-col items-center justify-center p-3.5 text-center transition-all cursor-pointer"
+                >
+                  <div className="w-12 h-12 rounded-2xl bg-[#145f96] text-white flex items-center justify-center mb-2.5 shadow-sm ring-4 ring-[#69b8e9]/20">
+                    <GraduationCap className="w-6 h-6 text-[#a1d63e]" />
+                  </div>
+                  <span className="text-sm sm:text-base font-bold text-[#145f96]">Maestros</span>
+                  <span className="text-[11px] text-slate-500 mt-0.5">
+                    {summary.maestrosClientCount} cliente(s)
+                  </span>
+                  {(summary.maestrosNio > 0 || summary.maestrosUsd > 0) && (
+                    <span className="text-[11px] font-mono font-bold text-[#4d7c0f] mt-1 tabular-nums truncate max-w-full">
+                      {summary.maestrosNio > 0
+                        ? formatCurrency(summary.maestrosNio, 'NIO')
+                        : formatCurrency(summary.maestrosUsd, 'USD')}
+                    </span>
+                  )}
+                </button>
+
+                {/* Tile 2: Inventario */}
+                <button
+                  type="button"
+                  onClick={() => setSection('inventario')}
+                  className="aspect-square sm:aspect-[4/3] rounded-2xl border-2 border-[#145f96]/20 hover:border-[#a1d63e] bg-white shadow-sm hover:shadow-md active:scale-[0.98] flex flex-col items-center justify-center p-3.5 text-center transition-all cursor-pointer"
+                >
+                  <div className="w-12 h-12 rounded-2xl bg-[#a1d63e] text-slate-950 flex items-center justify-center mb-2.5 shadow-sm ring-4 ring-[#a1d63e]/25">
+                    <Package className="w-6 h-6" />
+                  </div>
+                  <span className="text-sm sm:text-base font-bold text-[#145f96]">Inventario</span>
+                  <span className="text-[11px] text-slate-500 mt-0.5">
+                    {summary.activeProductsCount} producto(s)
+                  </span>
+                  <span className="text-[11px] font-semibold text-[#df7729] mt-1">
+                    Claro 🔴 · Tigo 🔵
+                  </span>
+                </button>
+
+                {/* Remaining Upcoming Modules */}
                 {UPCOMING_MODULES.map((mod) => (
                   <div
                     key={mod.id}
@@ -582,11 +681,35 @@ export const MainDashboard: React.FC = () => {
               </button>
             </div>
           </div>
+        ) : section === 'inventario' ? (
+          <InventoryModule
+            products={products}
+            currentUserId={user?.uid || ''}
+            currentUserName={displayName}
+            isAdmin={isAdmin}
+            onBackToDashboard={() => setSection('home')}
+          />
+        ) : section === 'maestros' ? (
+          <ClosedCreditModule
+            moduleId="maestros"
+            moduleLabel="Maestros"
+            moduleSubtitle="Créditos cerrados · Recargas y ventas de inventario"
+            clients={clients}
+            credits={credits}
+            transactions={transactions}
+            products={products}
+            currentUserId={user?.uid || ''}
+            currentUserName={displayName}
+            isAdmin={isAdmin}
+            onBackToDashboard={() => setSection('home')}
+            onTriggerInvoice={(inv) => setActiveInvoice(inv)}
+          />
         ) : (
           <CreditCashModule
             clients={clients}
             credits={credits}
             transactions={transactions}
+            products={products}
             currentUserId={user?.uid || ''}
             currentUserName={displayName}
             isAdmin={isAdmin}
@@ -610,6 +733,7 @@ export const MainDashboard: React.FC = () => {
         clients={clients}
         credits={credits}
         transactions={transactions}
+        products={products}
         adminUid={user?.uid || ''}
         adminName={displayName}
         onTriggerInvoice={(inv) => setActiveInvoice(inv)}

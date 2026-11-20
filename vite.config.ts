@@ -24,7 +24,7 @@ export default defineConfig(() => {
         manifest: {
           id: '/',
           name: 'Akrobit',
-          short_name: 'akrobit',
+          short_name: 'Akrobit',
           description:
             'Plataforma corporativa Akrobit para gestión de créditos, pagos sobre saldo, facturación por WhatsApp y operación online/offline.',
           theme_color: '#145f96',

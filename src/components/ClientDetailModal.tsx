@@ -3,6 +3,8 @@ import {
   Archive,
   ArrowLeft,
   BadgeDollarSign,
+  Banknote,
+  Building2,
   Check,
   CheckCircle2,
   Copy,
@@ -29,6 +31,7 @@ import {
   calculateProratedPayment,
   formatActorName,
   formatCurrency,
+  formatPaymentMethodLabel,
   generateDocId,
   getPortalAgingTier,
   isAndroidDevice,
@@ -51,6 +54,7 @@ import type {
   CreditTransaction,
   CurrencyCode,
   InvoicePayload,
+  PaymentMethod,
 } from '../types';
 
 type ActiveAction = 'menu' | 'add_credit' | 'register_payment' | 'modify_records';
@@ -118,6 +122,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
 
   const [selectedCreditId, setSelectedCreditId] = useState<string>('');
   const [paymentInput, setPaymentInput] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>('');
   const [whatsappPickOpen, setWhatsappPickOpen] = useState(false);
 
   // 3. Modificar Registros state
@@ -296,6 +301,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         id: creditId,
         clientId: client.id,
         clientName: client.name,
+        moduleId: 'credit_cash',
         currency,
         principal: safePrincipal,
         interestRate,
@@ -315,6 +321,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         id: txId,
         creditId,
         clientId: client.id,
+        moduleId: 'credit_cash',
         type: 'credit',
         currency,
         amount: safePrincipal,
@@ -398,6 +405,10 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
       setErrorMessage('Ingresa un monto de pago mayor que 0.');
       return;
     }
+    if (!paymentMethod) {
+      setErrorMessage('Selecciona obligatoriamente si el pago fue en Cash o Bank.');
+      return;
+    }
     const maxPayableToday = activePaymentLiveStatus.totalDueToday;
     if (parsedPayment > maxPayableToday) {
       setErrorMessage(
@@ -428,12 +439,14 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         id: txId,
         creditId: activePaymentCredit.id,
         clientId: client.id,
+        moduleId: 'credit_cash',
         type: 'payment',
         currency: activePaymentCredit.currency,
         amount: round2(parsedPayment),
         interestRate: activePaymentCredit.interestRate,
         previousBalance: activePaymentCredit.currentBalance,
         newBalance: paymentPreview.newBalance,
+        paymentMethod,
         note: paymentPreview.settled
           ? activePaymentLiveStatus.isFrozen
             ? 'Liquidación total en Cartera Castigada'
@@ -482,6 +495,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
 
       const invoice: InvoicePayload = {
         kind: 'payment',
+        moduleLabel: 'Credit Cash',
         clientName: client.name,
         clientPhone: client.phone,
         currency: activePaymentCredit.currency,
@@ -498,6 +512,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
         interestMode: activePaymentCredit.interestMode || 'pre_added',
         newBalance: paymentPreview.newBalance,
         creditLabel: creditLabelById.get(activePaymentCredit.id),
+        paymentMethod,
         portalUrl: getPublicPortalUrl(),
         portalCode,
         attendedBy: currentUserName,
@@ -506,6 +521,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
       };
 
       setPaymentInput('');
+      setPaymentMethod('');
       setSelectedCreditId('');
       setAction('menu');
       onTriggerInvoice(invoice);
@@ -1177,6 +1193,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
           onClick={() => {
             setErrorMessage('');
             setStatusMessage('');
+            setPaymentMethod('');
             setSelectedCreditId(activeCredits.length === 1 ? activeCredits[0].id : '');
             setAction('register_payment');
           }}
@@ -1471,6 +1488,45 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                       <div className="min-h-[46px] rounded-xl bg-slate-100 border border-slate-200 px-3 flex items-center justify-end font-mono text-sm font-bold text-[#145f96] tabular-nums">
                         {formatCurrency(activePaymentLiveStatus.totalDueToday, activePaymentCredit.currency)}
                       </div>
+                    </div>
+                  </div>
+
+                  {/* Mandatory Cash / Bank selector for accounting & Caja */}
+                  <div>
+                    <span className="block text-xs font-bold text-slate-700 mb-1.5">
+                      Método de recepción (Obligatorio)
+                    </span>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setErrorMessage('');
+                          setPaymentMethod('cash');
+                        }}
+                        className={`min-h-[46px] rounded-xl border-2 px-3 py-2 flex items-center justify-center gap-2 text-sm font-bold transition-all cursor-pointer ${
+                          paymentMethod === 'cash'
+                            ? 'bg-[#a1d63e] border-[#4d7c0f] text-slate-950 shadow-sm'
+                            : 'bg-white border-slate-200 text-slate-700 hover:border-[#a1d63e]'
+                        }`}
+                      >
+                        <Banknote className="w-4 h-4 shrink-0" />
+                        <span>Cash</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setErrorMessage('');
+                          setPaymentMethod('bank');
+                        }}
+                        className={`min-h-[46px] rounded-xl border-2 px-3 py-2 flex items-center justify-center gap-2 text-sm font-bold transition-all cursor-pointer ${
+                          paymentMethod === 'bank'
+                            ? 'bg-[#145f96] border-[#145f96] text-white shadow-sm'
+                            : 'bg-white border-slate-200 text-slate-700 hover:border-[#69b8e9]'
+                        }`}
+                      >
+                        <Building2 className="w-4 h-4 shrink-0" />
+                        <span>Bank</span>
+                      </button>
                     </div>
                   </div>
 
@@ -1774,6 +1830,7 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                       onClick={() => {
                         setErrorMessage('');
                         setStatusMessage('');
+                        setPaymentMethod('');
                         setSelectedCreditId(credit.id);
                         setAction('register_payment');
                       }}
@@ -1813,7 +1870,9 @@ export const ClientDetailModal: React.FC<ClientDetailModalProps> = ({
                     {tx.type === 'credit'
                       ? `Crédito otorgado${shortCreditNum ? ` ${shortCreditNum}` : ''} (${tx.interestRate}%)`
                       : tx.type === 'payment'
-                        ? `Pago recibido${shortCreditNum ? ` · ${shortCreditNum}` : ''}`
+                        ? `Pago recibido${shortCreditNum ? ` · ${shortCreditNum}` : ''}${
+                            tx.paymentMethod ? ` · ${formatPaymentMethodLabel(tx.paymentMethod)}` : ''
+                          }`
                         : `Ajuste${shortCreditNum ? ` · ${shortCreditNum}` : ''}`}
                   </p>
                   <p

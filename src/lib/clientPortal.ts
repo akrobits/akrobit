@@ -10,7 +10,12 @@ import {
   type WriteBatch,
 } from 'firebase/firestore';
 import { ORG_ID, db } from './firebase';
-import { calculateLiveCreditStatus, cleanPhoneInput, round2 } from './finance';
+import {
+  calculateLiveCreditStatus,
+  cleanPhoneInput,
+  getModuleLabelById,
+  round2,
+} from './finance';
 import type {
   Client,
   ClientPortalSnapshot,
@@ -40,6 +45,9 @@ export function isOfficialAkrobitDomain(hostname?: string): boolean {
 }
 
 function getTimestampMillis(ts: unknown): number {
+  if (typeof ts === 'number' && Number.isFinite(ts)) {
+    return ts;
+  }
   if (ts && typeof ts === 'object' && 'toMillis' in ts) {
     return (ts as { toMillis: () => number }).toMillis();
   }
@@ -151,15 +159,18 @@ export function buildClientPortalPayload(
   clientName: string,
   credits: Credit[],
   transactions: CreditTransaction[],
-  portfolioStatus: PortfolioStatus = 'active'
+  portfolioStatus: PortfolioStatus = 'active',
+  moduleId: string = 'credit_cash'
 ): ClientPortalSnapshot {
+  const moduleLabel = getModuleLabelById(moduleId);
   const allClientCreditsSorted = credits
     .filter((c) => c.clientId === clientId)
     .sort((a, b) => getTimestampMillis(a.createdAt) - getTimestampMillis(b.createdAt));
 
   const creditLabelById = new Map<string, string>();
   allClientCreditsSorted.forEach((cr, idx) => {
-    creditLabelById.set(cr.id, `Credit Cash N°${idx + 1}`);
+    const labelPrefix = cr.interestMode === 'closed' ? `Cuenta ${moduleLabel}` : 'Credit Cash';
+    creditLabelById.set(cr.id, `${labelPrefix} N°${idx + 1}`);
   });
 
   const activeSorted = allClientCreditsSorted
@@ -173,8 +184,10 @@ export function buildClientPortalPayload(
     if (c.currency === 'NIO') totalNio = round2(totalNio + live.totalDueToday);
     else totalUsd = round2(totalUsd + live.totalDueToday);
 
+    const fallbackPrefix = c.interestMode === 'closed' ? `Cuenta ${moduleLabel}` : 'Credit Cash';
+
     return {
-      label: (creditLabelById.get(c.id) || `Credit Cash N°${idx + 1}`).slice(0, 60),
+      label: (creditLabelById.get(c.id) || `${fallbackPrefix} N°${idx + 1}`).slice(0, 60),
       currency: c.currency,
       principal: round2(c.principal),
       interestRate: c.interestRate,
@@ -201,6 +214,7 @@ export function buildClientPortalPayload(
 
   const recentTransactions: PortalTransactionItem[] = sortedTxs.map((tx) => {
     const cleanNote = (tx.note || '').trim().slice(0, 240);
+    const cleanProduct = (tx.productName || '').trim().slice(0, 120);
     return {
       type: tx.type,
       currency: tx.currency,
@@ -208,6 +222,8 @@ export function buildClientPortalPayload(
       interestRate: tx.interestRate,
       previousBalance: round2(Math.max(0, tx.previousBalance)),
       newBalance: round2(Math.max(0, tx.newBalance)),
+      ...(tx.paymentMethod ? { paymentMethod: tx.paymentMethod } : {}),
+      ...(cleanProduct ? { productName: cleanProduct } : {}),
       ...(cleanNote ? { note: cleanNote } : {}),
       dateLabel: formatPortalDateTime(tx.createdAt),
     };
@@ -217,6 +233,8 @@ export function buildClientPortalPayload(
     id: portalKey,
     clientId,
     clientName: clientName.trim().slice(0, 120) || 'Cliente Akrobit',
+    moduleId,
+    moduleLabel,
     orgId: ORG_ID,
     totalNio: round2(Math.max(0, totalNio)),
     totalUsd: round2(Math.max(0, totalUsd)),
@@ -234,7 +252,8 @@ export function attachPortalSnapshotToBatch(
   clientName: string,
   credits: Credit[],
   transactions: CreditTransaction[],
-  portfolioStatus: PortfolioStatus = 'active'
+  portfolioStatus: PortfolioStatus = 'active',
+  moduleId: string = 'credit_cash'
 ): void {
   const payload = buildClientPortalPayload(
     portalKey,
@@ -242,7 +261,8 @@ export function attachPortalSnapshotToBatch(
     clientName,
     credits,
     transactions,
-    portfolioStatus
+    portfolioStatus,
+    moduleId
   );
   batch.set(doc(db, 'clientPortals', portalKey), payload);
 }
@@ -305,7 +325,8 @@ export async function syncClientPortalFromServer(clientId: string): Promise<void
     client.name,
     credits,
     transactions,
-    client.portfolioStatus || 'active'
+    client.portfolioStatus || 'active',
+    client.moduleId || 'credit_cash'
   );
   await batch.commit();
 }
@@ -337,7 +358,8 @@ export async function regenerateClientPortalCredentials(
     client.name,
     clientCredits,
     clientTransactions,
-    client.portfolioStatus || 'active'
+    client.portfolioStatus || 'active',
+    client.moduleId || 'credit_cash'
   );
 
   await Promise.race([

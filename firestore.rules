@@ -83,7 +83,7 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'name', 'phone', 'orgId', 'createdBy', 'active', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly([
           'id', 'name', 'phone', 'notes', 'portalCode', 'portalKey',
-          'portfolioStatus', 'sourceModule', 'castigadaAt', 'castigadaBy', 'castigadaByName',
+          'portfolioStatus', 'sourceModule', 'moduleId', 'castigadaAt', 'castigadaBy', 'castigadaByName',
           'orgId', 'createdBy', 'active', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
@@ -94,6 +94,7 @@ service cloud.firestore {
         && (!('portalKey' in data) || isValidPortalKey(data.portalKey))
         && (!('portfolioStatus' in data) || (data.portfolioStatus is string && (data.portfolioStatus == 'active' || data.portfolioStatus == 'castigada')))
         && (!('sourceModule' in data) || (data.sourceModule is string && data.sourceModule.size() >= 1 && data.sourceModule.size() <= 60))
+        && (!('moduleId' in data) || (data.moduleId is string && data.moduleId.size() >= 1 && data.moduleId.size() <= 60))
         && (!('castigadaBy' in data) || isValidId(data.castigadaBy))
         && (!('castigadaByName' in data) || (data.castigadaByName is string && data.castigadaByName.size() >= 1 && data.castigadaByName.size() <= 80))
         && data.orgId == 'akrobit'
@@ -110,7 +111,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'clientId', 'clientName', 'currency', 'principal',
           'interestRate', 'initialTotal', 'currentBalance', 'status',
-          'interestMode', 'lastPaymentAt', 'frozenDays', 'frozenAccruedInterest', 'frozenAt',
+          'interestMode', 'moduleId', 'lastPaymentAt', 'frozenDays', 'frozenAccruedInterest', 'frozenAt',
           'orgId', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
@@ -118,11 +119,15 @@ service cloud.firestore {
         && data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 120
         && data.currency is string && (data.currency == 'NIO' || data.currency == 'USD')
         && data.principal is number && data.principal > 0 && data.principal <= 100000000
-        && data.interestRate is number && data.interestRate >= 5 && data.interestRate <= 10
+        && data.interestRate is number && (
+          (('interestMode' in data) && data.interestMode == 'closed' && data.interestRate >= 0 && data.interestRate <= 100) ||
+          (data.interestRate >= 5 && data.interestRate <= 10)
+        )
         && data.initialTotal is number && data.initialTotal > 0 && data.initialTotal <= 200000000
         && data.currentBalance is number && data.currentBalance >= 0 && data.currentBalance <= 200000000
         && data.status is string && (data.status == 'active' || data.status == 'settled')
-        && (!('interestMode' in data) || (data.interestMode is string && (data.interestMode == 'prorated_daily' || data.interestMode == 'pre_added')))
+        && (!('interestMode' in data) || (data.interestMode is string && (data.interestMode == 'prorated_daily' || data.interestMode == 'pre_added' || data.interestMode == 'closed')))
+        && (!('moduleId' in data) || (data.moduleId is string && data.moduleId.size() >= 1 && data.moduleId.size() <= 60))
         && (!('frozenDays' in data) || (data.frozenDays is number && data.frozenDays >= 0 && data.frozenDays <= 100000))
         && (!('frozenAccruedInterest' in data) || (data.frozenAccruedInterest is number && data.frozenAccruedInterest >= 0 && data.frozenAccruedInterest <= 200000000))
         && data.orgId == 'akrobit'
@@ -139,18 +144,32 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'creditId', 'clientId', 'type', 'currency',
           'amount', 'interestRate', 'previousBalance', 'newBalance',
-          'note', 'orgId', 'createdBy', 'createdByName', 'createdAt'
+          'note', 'paymentMethod', 'moduleId',
+          'productId', 'productName', 'quantitySold', 'costAmount',
+          'profitType', 'profitValue', 'profitAmount', 'commissionAmount', 'netProfitAmount',
+          'orgId', 'createdBy', 'createdByName', 'createdAt'
         ])
         && isValidId(data.id)
         && isValidId(data.creditId)
         && isValidId(data.clientId)
-        && data.type is string && (data.type == 'credit' || data.type == 'payment' || data.type == 'adjustment')
+        && data.type is string && (data.type == 'credit' || data.type == 'payment' || data.type == 'adjustment' || data.type == 'sale')
         && data.currency is string && (data.currency == 'NIO' || data.currency == 'USD')
         && data.amount is number && data.amount >= 0 && data.amount <= 200000000
-        && data.interestRate is number && data.interestRate >= 5 && data.interestRate <= 10
+        && data.interestRate is number && data.interestRate >= 0 && data.interestRate <= 100
         && data.previousBalance is number && data.previousBalance >= 0 && data.previousBalance <= 200000000
         && data.newBalance is number && data.newBalance >= 0 && data.newBalance <= 200000000
         && (!('note' in data) || (data.note is string && data.note.size() <= 240))
+        && (!('paymentMethod' in data) || (data.paymentMethod is string && (data.paymentMethod == 'cash' || data.paymentMethod == 'bank')))
+        && (!('moduleId' in data) || (data.moduleId is string && data.moduleId.size() >= 1 && data.moduleId.size() <= 60))
+        && (!('productId' in data) || isValidId(data.productId))
+        && (!('productName' in data) || (data.productName is string && data.productName.size() >= 1 && data.productName.size() <= 120))
+        && (!('quantitySold' in data) || (data.quantitySold is number && data.quantitySold >= 0 && data.quantitySold <= 100000000))
+        && (!('costAmount' in data) || (data.costAmount is number && data.costAmount >= 0 && data.costAmount <= 200000000))
+        && (!('profitType' in data) || (data.profitType is string && (data.profitType == 'amount' || data.profitType == 'percent')))
+        && (!('profitValue' in data) || (data.profitValue is number && data.profitValue >= 0 && data.profitValue <= 200000000))
+        && (!('profitAmount' in data) || (data.profitAmount is number && data.profitAmount >= 0 && data.profitAmount <= 200000000))
+        && (!('commissionAmount' in data) || (data.commissionAmount is number && data.commissionAmount >= 0 && data.commissionAmount <= 200000000))
+        && (!('netProfitAmount' in data) || (data.netProfitAmount is number && data.netProfitAmount >= -200000000 && data.netProfitAmount <= 200000000))
         && data.orgId == 'akrobit'
         && isValidId(data.createdBy)
         && data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 80;
@@ -166,7 +185,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'targetType', 'creditId', 'transactionId', 'clientId', 'clientName',
           'currency', 'oldValue', 'newValue', 'oldInterestRate', 'newInterestRate',
-          'reason', 'status', 'orgId', 'requestedBy', 'requestedByName',
+          'reason', 'status', 'moduleId', 'orgId', 'requestedBy', 'requestedByName',
           'reviewedBy', 'reviewedByName', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
@@ -178,8 +197,8 @@ service cloud.firestore {
         && data.currency is string && (data.currency == 'NIO' || data.currency == 'USD')
         && data.oldValue is number && data.oldValue >= 0 && data.oldValue <= 200000000
         && data.newValue is number && data.newValue >= 0 && data.newValue <= 200000000
-        && data.oldInterestRate is number && data.oldInterestRate >= 5 && data.oldInterestRate <= 10
-        && data.newInterestRate is number && data.newInterestRate >= 5 && data.newInterestRate <= 10
+        && data.oldInterestRate is number && data.oldInterestRate >= 0 && data.oldInterestRate <= 100
+        && data.newInterestRate is number && data.newInterestRate >= 0 && data.newInterestRate <= 100
         && data.reason is string && data.reason.size() >= 1 && data.reason.size() <= 240
         && data.status is string && (
           data.status == 'pending' ||
@@ -187,6 +206,7 @@ service cloud.firestore {
           data.status == 'rejected' ||
           data.status == 'corrected'
         )
+        && (!('moduleId' in data) || (data.moduleId is string && data.moduleId.size() >= 1 && data.moduleId.size() <= 60))
         && data.orgId == 'akrobit'
         && isValidId(data.requestedBy)
         && data.requestedByName is string && data.requestedByName.size() >= 1 && data.requestedByName.size() <= 80
@@ -201,7 +221,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'id', 'clientId', 'clientName', 'orgId', 'totalNio', 'totalUsd',
-          'activeCredits', 'recentTransactions', 'portfolioStatus', 'updatedAt'
+          'activeCredits', 'recentTransactions', 'portfolioStatus', 'moduleId', 'moduleLabel', 'updatedAt'
         ])
         && isValidPortalKey(data.id)
         && isValidId(data.clientId)
@@ -210,6 +230,8 @@ service cloud.firestore {
         && data.totalNio is number && data.totalNio >= 0 && data.totalNio <= 400000000
         && data.totalUsd is number && data.totalUsd >= 0 && data.totalUsd <= 400000000
         && (!('portfolioStatus' in data) || (data.portfolioStatus is string && (data.portfolioStatus == 'active' || data.portfolioStatus == 'castigada')))
+        && (!('moduleId' in data) || (data.moduleId is string && data.moduleId.size() >= 1 && data.moduleId.size() <= 60))
+        && (!('moduleLabel' in data) || (data.moduleLabel is string && data.moduleLabel.size() >= 1 && data.moduleLabel.size() <= 60))
         && data.activeCredits is list && data.activeCredits.size() <= 50
         && (
           data.activeCredits.size() == 0 || (
@@ -223,7 +245,7 @@ service cloud.firestore {
             data.activeCredits[0].currentBalance is number &&
             data.activeCredits[0].dateLabel is string && data.activeCredits[0].dateLabel.size() <= 60 &&
             (!('lastActivityMs' in data.activeCredits[0]) || data.activeCredits[0].lastActivityMs is number) &&
-            (!('interestMode' in data.activeCredits[0]) || (data.activeCredits[0].interestMode is string && (data.activeCredits[0].interestMode == 'prorated_daily' || data.activeCredits[0].interestMode == 'pre_added'))) &&
+            (!('interestMode' in data.activeCredits[0]) || (data.activeCredits[0].interestMode is string && (data.activeCredits[0].interestMode == 'prorated_daily' || data.activeCredits[0].interestMode == 'pre_added' || data.activeCredits[0].interestMode == 'closed'))) &&
             (!('projected30DayInterest' in data.activeCredits[0]) || data.activeCredits[0].projected30DayInterest is number) &&
             (!('projected30DayTotal' in data.activeCredits[0]) || data.activeCredits[0].projected30DayTotal is number) &&
             (!('isFrozen' in data.activeCredits[0]) || data.activeCredits[0].isFrozen is bool) &&
@@ -236,17 +258,46 @@ service cloud.firestore {
           data.recentTransactions.size() == 0 || (
             data.recentTransactions[0] is map &&
             data.recentTransactions[0].keys().hasAll(['type', 'currency', 'amount', 'interestRate', 'previousBalance', 'newBalance', 'dateLabel']) &&
-            data.recentTransactions[0].keys().hasOnly(['type', 'currency', 'amount', 'interestRate', 'previousBalance', 'newBalance', 'note', 'dateLabel']) &&
-            data.recentTransactions[0].type is string && (data.recentTransactions[0].type == 'credit' || data.recentTransactions[0].type == 'payment' || data.recentTransactions[0].type == 'adjustment') &&
+            data.recentTransactions[0].keys().hasOnly(['type', 'currency', 'amount', 'interestRate', 'previousBalance', 'newBalance', 'note', 'paymentMethod', 'productName', 'dateLabel']) &&
+            data.recentTransactions[0].type is string && (data.recentTransactions[0].type == 'credit' || data.recentTransactions[0].type == 'payment' || data.recentTransactions[0].type == 'adjustment' || data.recentTransactions[0].type == 'sale') &&
             data.recentTransactions[0].currency is string && (data.recentTransactions[0].currency == 'NIO' || data.recentTransactions[0].currency == 'USD') &&
             data.recentTransactions[0].amount is number &&
             data.recentTransactions[0].interestRate is number &&
             data.recentTransactions[0].previousBalance is number &&
             data.recentTransactions[0].newBalance is number &&
             (!('note' in data.recentTransactions[0]) || (data.recentTransactions[0].note is string && data.recentTransactions[0].note.size() <= 240)) &&
+            (!('paymentMethod' in data.recentTransactions[0]) || (data.recentTransactions[0].paymentMethod is string && (data.recentTransactions[0].paymentMethod == 'cash' || data.recentTransactions[0].paymentMethod == 'bank'))) &&
+            (!('productName' in data.recentTransactions[0]) || (data.recentTransactions[0].productName is string && data.recentTransactions[0].productName.size() <= 120)) &&
             data.recentTransactions[0].dateLabel is string && data.recentTransactions[0].dateLabel.size() <= 60
           )
         );
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'category', 'currency', 'quantity',
+          'costPrice', 'salesCommission', 'profitType', 'profitValue',
+          'orgId', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'barcode', 'category', 'carrier', 'currency', 'quantity',
+          'costPrice', 'salesCommission', 'profitType', 'profitValue', 'notes',
+          'orgId', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && (!('barcode' in data) || (data.barcode is string && data.barcode.size() <= 80))
+        && data.category is string && (data.category == 'recharge' || data.category == 'general')
+        && (!('carrier' in data) || (data.carrier is string && (data.carrier == 'claro' || data.carrier == 'tigo' || data.carrier == 'none')))
+        && data.currency is string && (data.currency == 'NIO' || data.currency == 'USD')
+        && data.quantity is number && data.quantity >= 0 && data.quantity <= 100000000
+        && data.costPrice is number && data.costPrice >= 0 && data.costPrice <= 100000000
+        && data.salesCommission is number && data.salesCommission >= 0 && data.salesCommission <= 100000000
+        && data.profitType is string && (data.profitType == 'amount' || data.profitType == 'percent')
+        && data.profitValue is number && data.profitValue >= 0 && data.profitValue <= 100000000
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 300))
+        && data.orgId == 'akrobit'
+        && isValidId(data.createdBy);
     }
 
     // --- Collection Rules ---
@@ -367,6 +418,14 @@ service cloud.firestore {
             && incoming().currency == existing().currency
             && (!('frozenAccruedInterest' in incoming()) || incoming().frozenAccruedInterest == 0 || ('frozenAccruedInterest' in existing() && incoming().frozenAccruedInterest == existing().frozenAccruedInterest))
             && incoming().diff(existing()).affectedKeys().hasOnly(['currentBalance', 'status', 'lastPaymentAt', 'frozenAccruedInterest', 'updatedAt'])
+          ) ||
+          (
+            existing().status != 'settled'
+            && ('interestMode' in existing())
+            && existing().interestMode == 'closed'
+            && incoming().interestMode == 'closed'
+            && incoming().currency == existing().currency
+            && incoming().diff(existing()).affectedKeys().hasOnly(['principal', 'initialTotal', 'currentBalance', 'status', 'lastPaymentAt', 'updatedAt'])
           )
         );
       allow delete: if isValidId(creditId) && isAdmin();
@@ -449,9 +508,34 @@ service cloud.firestore {
         && incoming().orgId == existing().orgId
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'clientName', 'totalNio', 'totalUsd', 'activeCredits', 'recentTransactions', 'portfolioStatus', 'updatedAt'
+          'clientName', 'totalNio', 'totalUsd', 'activeCredits', 'recentTransactions', 'portfolioStatus', 'moduleId', 'moduleLabel', 'updatedAt'
         ]);
       allow delete: if isValidPortalKey(portalKey) && isActiveMember();
+    }
+
+    match /products/{productId} {
+      allow get: if isValidId(productId) && isActiveMember();
+      allow list: if isActiveMember() && existing().orgId == 'akrobit';
+      allow create: if isValidId(productId)
+        && isValidProduct(incoming())
+        && isActiveMember()
+        && incoming().id == productId
+        && incoming().createdBy == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(productId)
+        && isValidProduct(incoming())
+        && isActiveMember()
+        && incoming().id == existing().id
+        && incoming().orgId == existing().orgId
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['quantity', 'updatedAt'])
+        );
+      allow delete: if isValidId(productId) && isAdmin();
     }
   }
 }

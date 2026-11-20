@@ -27,12 +27,14 @@ import {
 import { syncClientPortalFromServer } from '../lib/clientPortal';
 import { useBackHandler } from '../lib/backNavigation';
 import { ClientDetailModal } from './ClientDetailModal';
+import { ClosedCreditClientDetailModal } from './ClosedCreditClientDetailModal';
 import type {
   Client,
   Credit,
   CreditTransaction,
   InvoicePayload,
   ModificationRequest,
+  Product,
   UserProfile,
 } from '../types';
 
@@ -63,6 +65,7 @@ interface AdminNotificationsModalProps {
   clients?: Client[];
   credits?: Credit[];
   transactions?: CreditTransaction[];
+  products?: Product[];
   adminUid: string;
   adminName: string;
   onTriggerInvoice?: (invoice: InvoicePayload) => void;
@@ -77,6 +80,7 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
   clients = [],
   credits = [],
   transactions = [],
+  products = [],
   adminUid,
   adminName,
   onTriggerInvoice,
@@ -84,6 +88,7 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
   const [activeTab, setActiveTab] = useState<'requests' | 'team' | 'alerts'>('requests');
   const [selectedAlertTarget, setSelectedAlertTarget] = useState<{
     key: string;
+    moduleId: string;
     moduleLabel: string;
     clientId: string;
   } | null>(null);
@@ -137,6 +142,7 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
       client: liveClient,
       credits: liveCredits,
       transactions: liveTxs,
+      moduleId: selectedAlertTarget.moduleId,
       moduleLabel: selectedAlertTarget.moduleLabel,
     };
   }, [selectedAlertTarget, clients, credits, transactions, overdueAlerts]);
@@ -212,19 +218,22 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
         const txSnap = await getDoc(txRef);
         if (txSnap.exists()) {
           const tx = txSnap.data() as CreditTransaction;
-          const paymentDiff = round2(finalValue - tx.amount);
-          const adjustedRemaining = round2(Math.max(0, credit.currentBalance - paymentDiff));
+          const diff = round2(finalValue - tx.amount);
+          const adjustedRemaining =
+            tx.type === 'sale'
+              ? round2(Math.max(0, credit.currentBalance + diff))
+              : round2(Math.max(0, credit.currentBalance - diff));
           nextBalance = adjustedRemaining;
 
           batch.update(txRef, {
             amount: round2(finalValue),
-            interestRate: finalRate,
+            interestRate: credit.interestMode === 'closed' ? 0 : finalRate,
             newBalance: nextBalance,
             note: `Corregido por Admin (${adminName})`,
           });
 
           batch.update(creditRef, {
-            interestRate: finalRate,
+            interestRate: credit.interestMode === 'closed' ? 0 : finalRate,
             currentBalance: nextBalance,
             status: nextBalance <= 0 ? 'settled' : 'active',
             updatedAt: serverTimestamp(),
@@ -237,10 +246,11 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
         id: adjTxId,
         creditId: req.creditId,
         clientId: req.clientId,
+        moduleId: req.moduleId || credit.moduleId || 'credit_cash',
         type: 'adjustment',
         currency: req.currency,
         amount: round2(finalValue),
-        interestRate: finalRate,
+        interestRate: credit.interestMode === 'closed' ? 0 : finalRate,
         previousBalance: prevBalance,
         newBalance: nextBalance,
         note: `${finalStatus === 'approved' ? 'Aprobado' : 'Corregido'} por ${adminName}: ${req.reason}`,
@@ -329,23 +339,43 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
           </button>
         </div>
 
-        {/* If a client from Alerta is selected, open full ClientDetailModal directly inside */}
+        {/* If a client from Alerta is selected, open full module detail directly inside */}
         {selectedLiveAlertData ? (
           <div className="p-3 sm:p-5 overflow-y-auto flex-1 bg-slate-50">
-            <ClientDetailModal
-              client={selectedLiveAlertData.client}
-              credits={selectedLiveAlertData.credits}
-              transactions={selectedLiveAlertData.transactions}
-              currentUserId={adminUid}
-              currentUserName={adminName}
-              isAdmin={true}
-              onBack={() => setSelectedAlertTarget(null)}
-              onTriggerInvoice={(inv) => {
-                if (onTriggerInvoice) {
-                  onTriggerInvoice(inv);
-                }
-              }}
-            />
+            {selectedLiveAlertData.moduleId !== 'credit_cash' ? (
+              <ClosedCreditClientDetailModal
+                moduleId={selectedLiveAlertData.moduleId}
+                moduleLabel={selectedLiveAlertData.moduleLabel}
+                client={selectedLiveAlertData.client}
+                credits={selectedLiveAlertData.credits}
+                transactions={selectedLiveAlertData.transactions}
+                products={products}
+                currentUserId={adminUid}
+                currentUserName={adminName}
+                isAdmin={true}
+                onBack={() => setSelectedAlertTarget(null)}
+                onTriggerInvoice={(inv) => {
+                  if (onTriggerInvoice) {
+                    onTriggerInvoice(inv);
+                  }
+                }}
+              />
+            ) : (
+              <ClientDetailModal
+                client={selectedLiveAlertData.client}
+                credits={selectedLiveAlertData.credits}
+                transactions={selectedLiveAlertData.transactions}
+                currentUserId={adminUid}
+                currentUserName={adminName}
+                isAdmin={true}
+                onBack={() => setSelectedAlertTarget(null)}
+                onTriggerInvoice={(inv) => {
+                  if (onTriggerInvoice) {
+                    onTriggerInvoice(inv);
+                  }
+                }}
+              />
+            )}
           </div>
         ) : (
           <>
@@ -687,6 +717,7 @@ export const AdminNotificationsModal: React.FC<AdminNotificationsModalProps> = (
                           onClick={() =>
                             setSelectedAlertTarget({
                               key: alert.key,
+                              moduleId: alert.moduleId,
                               moduleLabel: alert.moduleLabel,
                               clientId: alert.client.id,
                             })

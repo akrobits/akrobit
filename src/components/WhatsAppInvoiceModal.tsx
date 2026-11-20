@@ -75,10 +75,12 @@ export const WhatsAppInvoiceModal: React.FC<WhatsAppInvoiceModalProps> = ({
               <p className="text-[11px] text-white/80">
                 {invoice.kind === 'consolidated'
                   ? 'Estado de Cuenta Consolidado'
-                  : invoice.kind === 'credit'
-                    ? 'Comprobante de Crédito'
-                    : 'Comprobante de Abono'}
-                {invoice.creditLabel ? ` · ${invoice.creditLabel}` : ''}
+                  : invoice.kind === 'sale'
+                    ? `Comprobante de Compra${invoice.moduleLabel ? ` · ${invoice.moduleLabel}` : ''}`
+                    : invoice.kind === 'credit'
+                      ? 'Comprobante de Crédito'
+                      : `Comprobante de Abono${invoice.moduleLabel ? ` · ${invoice.moduleLabel}` : ''}`}
+                {invoice.creditLabel && invoice.kind !== 'sale' ? ` · ${invoice.creditLabel}` : ''}
               </p>
             </div>
           </div>
@@ -95,26 +97,27 @@ export const WhatsAppInvoiceModal: React.FC<WhatsAppInvoiceModalProps> = ({
         {/* Receipt preview */}
         <div className="p-5 space-y-4 max-h-[78dvh] overflow-y-auto">
           <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 space-y-2.5 text-sm">
-            <div className="flex items-center justify-between text-xs text-slate-500">
-              <span>{invoice.dateLabel}</span>
-              <span className="font-mono font-semibold text-[#145f96]">
-                #{invoice.referenceId.slice(-8).toUpperCase()}
-              </span>
-            </div>
-
-            <div className="border-t border-slate-200 pt-2.5 space-y-1.5">
+            <div className="space-y-1.5">
               <div className="flex justify-between gap-2">
-                <span className="text-slate-500">Cliente:</span>
+                <span className="text-slate-500">Hola!</span>
                 <span className="font-bold text-slate-900 text-right">{invoice.clientName}</span>
               </div>
               <div className="flex justify-between gap-2">
                 <span className="text-slate-500">Teléfono:</span>
                 <span className="font-mono text-slate-700">{invoice.clientPhone}</span>
               </div>
-              {invoice.creditLabel && invoice.kind !== 'consolidated' && (
+              {invoice.creditLabel && invoice.kind !== 'consolidated' && invoice.kind !== 'sale' && (
                 <div className="flex justify-between gap-2">
                   <span className="text-slate-500">Cuenta:</span>
                   <span className="font-bold text-[#145f96]">{invoice.creditLabel}</span>
+                </div>
+              )}
+              {invoice.kind === 'payment' && invoice.paymentMethod && (
+                <div className="flex justify-between gap-2">
+                  <span className="text-slate-500">Método interno:</span>
+                  <span className="font-bold text-[#145f96] uppercase text-xs">
+                    {invoice.paymentMethod === 'cash' ? 'Cash (Efectivo)' : 'Bank (Banco)'}
+                  </span>
                 </div>
               )}
 
@@ -130,11 +133,13 @@ export const WhatsAppInvoiceModal: React.FC<WhatsAppInvoiceModalProps> = ({
                               ? ` · ${item.daysElapsed}d`
                               : ''}
                           </p>
-                          <p className="text-[11px] text-slate-500">
-                            Cap: {formatCurrency(item.principal, item.currency)} ({item.interestRate}%)
-                            {(item.accruedInterest ?? 0) > 0 &&
-                              ` · Int: +${formatCurrency(item.accruedInterest ?? 0, item.currency)}`}
-                          </p>
+                          {item.interestMode !== 'closed' && (
+                            <p className="text-[11px] text-slate-500">
+                              Cap: {formatCurrency(item.principal, item.currency)} ({item.interestRate}%)
+                              {(item.accruedInterest ?? 0) > 0 &&
+                                ` · Int: +${formatCurrency(item.accruedInterest ?? 0, item.currency)}`}
+                            </p>
+                          )}
                         </div>
                         <span className="font-mono font-bold text-slate-900 tabular-nums shrink-0">
                           {formatCurrency(item.currentBalance, item.currency)}
@@ -162,6 +167,38 @@ export const WhatsAppInvoiceModal: React.FC<WhatsAppInvoiceModalProps> = ({
                     )}
                   </div>
                 </div>
+              ) : invoice.kind === 'sale' ? (
+                <>
+                  {invoice.productName && (
+                    <div className="flex justify-between gap-2">
+                      <span className="text-slate-500">Detalle:</span>
+                      <span className="font-bold text-slate-900 text-right">
+                        {invoice.productName}
+                        {invoice.quantitySold && invoice.quantitySold > 1
+                          ? ` (x${invoice.quantitySold})`
+                          : ''}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">Total:</span>
+                    <span className="font-mono font-bold text-[#145f96] tabular-nums">
+                      {formatCurrency(invoice.amount, invoice.currency)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">Saldo anterior:</span>
+                    <span className="font-mono tabular-nums">
+                      {formatCurrency(invoice.previousBalance, invoice.currency)}
+                    </span>
+                  </div>
+                  <div className="border-t border-slate-200 pt-2 flex justify-between gap-2 text-base font-bold text-[#145f96]">
+                    <span>Saldo actual:</span>
+                    <span className="font-mono tabular-nums">
+                      {formatCurrency(invoice.newBalance, invoice.currency)}
+                    </span>
+                  </div>
+                </>
               ) : invoice.kind === 'credit' ? (
                 invoice.interestMode === 'prorated_daily' ? (
                   <>
@@ -212,6 +249,27 @@ export const WhatsAppInvoiceModal: React.FC<WhatsAppInvoiceModalProps> = ({
                     </div>
                   </>
                 )
+              ) : invoice.interestMode === 'closed' ? (
+                <>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">Saldo anterior:</span>
+                    <span className="font-mono tabular-nums">
+                      {formatCurrency(invoice.previousBalance, invoice.currency)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-slate-500">Abono realizado:</span>
+                    <span className="font-mono font-bold text-[#4d7c0f] tabular-nums">
+                      - {formatCurrency(invoice.amount, invoice.currency)}
+                    </span>
+                  </div>
+                  <div className="border-t border-slate-200 pt-2 flex justify-between gap-2 text-base font-bold text-[#145f96]">
+                    <span>Nuevo saldo:</span>
+                    <span className="font-mono tabular-nums">
+                      {formatCurrency(invoice.newBalance, invoice.currency)}
+                    </span>
+                  </div>
+                </>
               ) : invoice.interestMode === 'prorated_daily' ? (
                 <>
                   <div className="flex justify-between gap-2">

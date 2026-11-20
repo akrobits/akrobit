@@ -4,6 +4,8 @@ import type {
   CreditTransaction,
   CurrencyCode,
   InvoicePayload,
+  PaymentMethod,
+  ProfitType,
 } from '../types';
 
 export const INTEREST_RATE_OPTIONS = [5, 6, 7, 8, 9, 10] as const;
@@ -17,6 +19,18 @@ export function formatActorName(rawName?: string): string {
   const clean = (rawName || '').trim();
   if (!clean || clean.toLowerCase() === 'akrobits') return 'Akrobit';
   return clean;
+}
+
+export function formatPaymentMethodLabel(method?: PaymentMethod): string {
+  if (method === 'cash') return 'Cash';
+  if (method === 'bank') return 'Bank';
+  return '';
+}
+
+export function getModuleLabelById(moduleId?: string): string {
+  if (!moduleId || moduleId === 'credit_cash') return 'Credit Cash';
+  if (moduleId === 'maestros') return 'Maestros';
+  return moduleId;
 }
 
 export function getCurrencySymbol(currency: CurrencyCode): string {
@@ -43,6 +57,49 @@ export function calculateInitialCreditTotal(principal: number, interestRate: num
   if (principal <= 0) return 0;
   const interest = calculateInterestCeil(principal, interestRate);
   return round2(principal + interest);
+}
+
+export interface ProductPricingBreakdown {
+  costAmount: number;
+  grossProfit: number;
+  commissionAmount: number;
+  netProfit: number;
+  saleTotal: number;
+}
+
+/**
+ * Computes pricing & analytics breakdown for inventory sales.
+ * - For percent profit (e.g., Claro/Tigo 10% or % products), rounds UP with calculateInterestCeil.
+ * - For open numeric amount profit, adds the exact amount.
+ * - Net profit reflects real profit after sales commission.
+ */
+export function calculateProductPricing(params: {
+  costAmount: number;
+  profitType: ProfitType;
+  profitValue: number;
+  commissionAmount?: number;
+}): ProductPricingBreakdown {
+  const safeCost = round2(Math.max(0, params.costAmount));
+  const safeProfitVal = Math.max(0, Number.isFinite(params.profitValue) ? params.profitValue : 0);
+  const safeCommission = round2(
+    Math.max(0, Number.isFinite(params.commissionAmount ?? 0) ? (params.commissionAmount ?? 0) : 0)
+  );
+
+  const grossProfit =
+    params.profitType === 'percent'
+      ? calculateInterestCeil(safeCost, safeProfitVal)
+      : round2(safeProfitVal);
+
+  const saleTotal = round2(safeCost + grossProfit);
+  const netProfit = round2(grossProfit - safeCommission);
+
+  return {
+    costAmount: safeCost,
+    grossProfit,
+    commissionAmount: safeCommission,
+    netProfit,
+    saleTotal,
+  };
 }
 
 /**
@@ -94,18 +151,30 @@ export function calculateCalendarDaysElapsed(
 }
 
 export function getCreditLastActivityMs(
-  credit: Pick<Credit, 'id' | 'createdAt' | 'lastPaymentAt'>,
+  credit: Pick<Credit, 'id' | 'createdAt' | 'lastPaymentAt' | 'interestMode'>,
   transactions: CreditTransaction[]
 ): number {
   let latestPaymentMs = 0;
+  let earliestSaleMs = 0;
+
   for (const tx of transactions) {
-    if (tx.creditId !== credit.id || tx.type !== 'payment') continue;
+    if (tx.creditId !== credit.id) continue;
     const ms = toTimestampMillis(tx.createdAt);
-    if (ms > latestPaymentMs) latestPaymentMs = ms;
+    if (ms <= 0) continue;
+    if (tx.type === 'payment') {
+      if (ms > latestPaymentMs) latestPaymentMs = ms;
+    } else if (tx.type === 'sale' || tx.type === 'credit') {
+      if (earliestSaleMs === 0 || ms < earliestSaleMs) earliestSaleMs = ms;
+    }
   }
+
   const creditPaymentMs = toTimestampMillis(credit.lastPaymentAt);
   const bestPaymentMs = Math.max(latestPaymentMs, creditPaymentMs);
   if (bestPaymentMs > 0) return bestPaymentMs;
+
+  if (credit.interestMode === 'closed' && earliestSaleMs > 0) {
+    return earliestSaleMs;
+  }
 
   const createdMs = toTimestampMillis(credit.createdAt);
   return createdMs > 0 ? createdMs : Date.now();
@@ -120,6 +189,7 @@ export interface LiveCreditStatus {
   projected30DayInterest: number;
   projected30DayTotal: number;
   isProratedDaily: boolean;
+  isClosedCredit: boolean;
   isFrozen: boolean;
 }
 
@@ -129,6 +199,7 @@ export function calculateLiveCreditStatus(
   nowMs: number = Date.now()
 ): LiveCreditStatus {
   const baseBalance = round2(Math.max(0, credit.currentBalance));
+  const isClosedCredit = credit.interestMode === 'closed';
   const isProratedDaily = credit.interestMode === 'prorated_daily';
   const isFrozen =
     credit.frozenAt != null ||
@@ -145,6 +216,7 @@ export function calculateLiveCreditStatus(
       projected30DayInterest: 0,
       projected30DayTotal: 0,
       isProratedDaily,
+      isClosedCredit,
       isFrozen,
     };
   }
@@ -153,7 +225,9 @@ export function calculateLiveCreditStatus(
 
   if (isFrozen) {
     const frozenDays = Math.max(0, Math.round(credit.frozenDays ?? 0));
-    const frozenInterest = round2(Math.max(0, credit.frozenAccruedInterest ?? 0));
+    const frozenInterest = isClosedCredit
+      ? 0
+      : round2(Math.max(0, credit.frozenAccruedInterest ?? 0));
     const totalDueToday = round2(baseBalance + frozenInterest);
     return {
       baseBalance,
@@ -164,11 +238,28 @@ export function calculateLiveCreditStatus(
       projected30DayInterest: 0,
       projected30DayTotal: totalDueToday,
       isProratedDaily,
+      isClosedCredit,
       isFrozen: true,
     };
   }
 
   const daysElapsed = calculateCalendarDaysElapsed(lastActivityMs, nowMs);
+
+  // Closed credits (Maestros & future product modules): zero monthly/daily interest on balance
+  if (isClosedCredit) {
+    return {
+      baseBalance,
+      lastActivityMs,
+      daysElapsed,
+      accruedInterest: 0,
+      totalDueToday: baseBalance,
+      projected30DayInterest: 0,
+      projected30DayTotal: baseBalance,
+      isProratedDaily: false,
+      isClosedCredit: true,
+      isFrozen: false,
+    };
+  }
 
   if (isProratedDaily) {
     const accruedInterest = calculateProratedInterestCeil(
@@ -188,6 +279,7 @@ export function calculateLiveCreditStatus(
       projected30DayInterest,
       projected30DayTotal,
       isProratedDaily: true,
+      isClosedCredit: false,
       isFrozen: false,
     };
   }
@@ -207,6 +299,7 @@ export function calculateLiveCreditStatus(
     projected30DayInterest: 0,
     projected30DayTotal: baseBalance,
     isProratedDaily: false,
+    isClosedCredit: false,
     isFrozen: false,
   };
 }
@@ -250,13 +343,19 @@ export function buildOverdueClientAlerts(params: {
   const { moduleId, moduleLabel, clients, credits, transactions, nowMs = Date.now() } = params;
   const activeClientMap = new Map<string, Client>();
   for (const client of clients) {
-    if (client.active !== false && client.portfolioStatus !== 'castigada') {
+    const clientModule = client.moduleId || 'credit_cash';
+    if (
+      clientModule === moduleId &&
+      client.active !== false &&
+      client.portfolioStatus !== 'castigada'
+    ) {
       activeClientMap.set(client.id, client);
     }
   }
 
   const creditsByClient = new Map<string, Credit[]>();
   for (const cr of credits) {
+    if (!activeClientMap.has(cr.clientId)) continue;
     const list = creditsByClient.get(cr.clientId) || [];
     list.push(cr);
     creditsByClient.set(cr.clientId, list);
@@ -264,6 +363,7 @@ export function buildOverdueClientAlerts(params: {
 
   const txsByClient = new Map<string, CreditTransaction[]>();
   for (const tx of transactions) {
+    if (!activeClientMap.has(tx.clientId)) continue;
     const list = txsByClient.get(tx.clientId) || [];
     list.push(tx);
     txsByClient.set(tx.clientId, list);
@@ -535,30 +635,33 @@ export function sanitizeWhatsAppPhone(rawPhone: string): string {
 }
 
 export function buildWhatsAppInvoiceText(payload: InvoicePayload): string {
+  const moduleTitle = payload.moduleLabel || 'Credit Cash';
+  const greeting = `Hola! *${payload.clientName.trim() || 'Cliente'}*`;
+
   if (payload.kind === 'consolidated') {
     const items = payload.consolidatedItems || [];
     const lines: string[] = [
-      '*Akrobit · Credit Cash*',
+      greeting,
+      `*Akrobit · ${moduleTitle}*`,
       '*Estado de cuenta consolidado*',
-      '────────────────────────',
-      `Fecha: ${payload.dateLabel}`,
-      `Cliente: ${payload.clientName}`,
       '────────────────────────',
     ];
 
     items.forEach((item, idx) => {
-      lines.push(
-        `*${item.label}*`,
-        `Fecha crédito: ${item.dateLabel}`,
-        `Moneda: ${item.currency === 'NIO' ? 'Córdobas (C$)' : 'Dólares (USD)'}`,
-        `Capital: ${formatCurrency(item.principal, item.currency)} (${item.interestRate}%)`
-      );
-      if (typeof item.daysElapsed === 'number' && (item.accruedInterest ?? 0) > 0) {
+      lines.push(`*${item.label}*`);
+      if (item.interestMode === 'closed') {
+        lines.push(`*Saldo pendiente: ${formatCurrency(item.currentBalance, item.currency)}*`);
+      } else {
         lines.push(
-          `Interés acumulado (${item.daysElapsed} días): + ${formatCurrency(item.accruedInterest ?? 0, item.currency)}`
+          `Capital: ${formatCurrency(item.principal, item.currency)} (${item.interestRate}%)`
         );
+        if (typeof item.daysElapsed === 'number' && (item.accruedInterest ?? 0) > 0) {
+          lines.push(
+            `Interés acumulado (${item.daysElapsed} días): + ${formatCurrency(item.accruedInterest ?? 0, item.currency)}`
+          );
+        }
+        lines.push(`*Total pendiente al día: ${formatCurrency(item.currentBalance, item.currency)}*`);
       }
-      lines.push(`*Total pendiente al día: ${formatCurrency(item.currentBalance, item.currency)}*`);
       if (idx < items.length - 1) {
         lines.push('');
       }
@@ -566,10 +669,10 @@ export function buildWhatsAppInvoiceText(payload: InvoicePayload): string {
 
     lines.push('────────────────────────', '*Total pendiente consolidado:*');
     if ((payload.totalNio ?? 0) > 0) {
-      lines.push(`*Córdobas: ${formatCurrency(payload.totalNio ?? 0, 'NIO')}*`);
+      lines.push(`*${formatCurrency(payload.totalNio ?? 0, 'NIO')}*`);
     }
     if ((payload.totalUsd ?? 0) > 0) {
-      lines.push(`*Dólares: ${formatCurrency(payload.totalUsd ?? 0, 'USD')}*`);
+      lines.push(`*${formatCurrency(payload.totalUsd ?? 0, 'USD')}*`);
     }
 
     if (payload.portalUrl && payload.portalCode) {
@@ -581,27 +684,39 @@ export function buildWhatsAppInvoiceText(payload: InvoicePayload): string {
       );
     }
 
-    lines.push('────────────────────────', 'https://wa.me/c/50576881122');
-
     return lines.join('\n');
   }
 
+  const subtitle =
+    payload.kind === 'sale'
+      ? '*Comprobante de compra*'
+      : payload.kind === 'credit'
+        ? '*Comprobante de crédito*'
+        : '*Comprobante de abono*';
+
   const lines: string[] = [
-    '*Akrobit · Credit Cash*',
-    payload.kind === 'credit' ? '*Comprobante de crédito*' : '*Comprobante de abono*',
+    greeting,
+    `*Akrobit · ${moduleTitle}*`,
+    subtitle,
     '────────────────────────',
-    `Fecha: ${payload.dateLabel}`,
-    `Ref: ${payload.referenceId.slice(-8).toUpperCase()}`,
-    `Cliente: ${payload.clientName}`,
   ];
 
-  if (payload.creditLabel) {
+  if (payload.creditLabel && payload.kind !== 'sale') {
     lines.push(`Cuenta: *${payload.creditLabel}*`);
   }
 
-  lines.push(`Moneda: ${payload.currency === 'NIO' ? 'Córdobas (C$)' : 'Dólares (USD)'}`);
-
-  if (payload.kind === 'credit') {
+  if (payload.kind === 'sale') {
+    const qtySuffix =
+      payload.quantitySold && payload.quantitySold > 1 ? ` (x${payload.quantitySold})` : '';
+    if (payload.productName) {
+      lines.push(`Detalle: ${payload.productName}${qtySuffix}`);
+    }
+    lines.push(
+      `*Total: ${formatCurrency(payload.amount, payload.currency)}*`,
+      `Saldo anterior: ${formatCurrency(payload.previousBalance, payload.currency)}`,
+      `*Saldo actual: ${formatCurrency(payload.newBalance, payload.currency)}*`
+    );
+  } else if (payload.kind === 'credit') {
     if (payload.interestMode === 'prorated_daily') {
       const est30Interest =
         payload.projected30DayInterest ??
@@ -622,37 +737,45 @@ export function buildWhatsAppInvoiceText(payload: InvoicePayload): string {
         `*Total del crédito: ${formatCurrency(payload.newBalance, payload.currency)}*`
       );
     }
-  } else {
-    if (payload.interestMode === 'prorated_daily') {
-      const days = payload.daysElapsed ?? 0;
-      const accrued = payload.accruedInterest ?? 0;
-      const totalDay = payload.totalDueToday ?? round2(payload.previousBalance + accrued);
-
-      lines.push(
-        `Capital anterior: ${formatCurrency(payload.previousBalance, payload.currency)}`,
-        `Interés (${days} día${days === 1 ? '' : 's'} al ${payload.interestRate}%): + ${formatCurrency(accrued, payload.currency)}`,
-        `Total exigible al día: ${formatCurrency(totalDay, payload.currency)}`,
-        `Abono realizado: - ${formatCurrency(payload.amount, payload.currency)}`
-      );
-      if (payload.newBalance <= 0) {
-        lines.push('*Estado: CRÉDITO LIQUIDADO (Saldo 0.00)*');
-      } else {
-        lines.push(`*Nuevo saldo capital: ${formatCurrency(payload.newBalance, payload.currency)}*`);
-      }
+  } else if (payload.interestMode === 'closed') {
+    lines.push(
+      `Saldo anterior: ${formatCurrency(payload.previousBalance, payload.currency)}`,
+      `Abono realizado: - ${formatCurrency(payload.amount, payload.currency)}`
+    );
+    if (payload.newBalance <= 0) {
+      lines.push('*Estado: CUENTA LIQUIDADA (Saldo 0.00)*');
     } else {
+      lines.push(`*Nuevo saldo actual: ${formatCurrency(payload.newBalance, payload.currency)}*`);
+    }
+  } else if (payload.interestMode === 'prorated_daily') {
+    const days = payload.daysElapsed ?? 0;
+    const accrued = payload.accruedInterest ?? 0;
+    const totalDay = payload.totalDueToday ?? round2(payload.previousBalance + accrued);
+
+    lines.push(
+      `Capital anterior: ${formatCurrency(payload.previousBalance, payload.currency)}`,
+      `Interés (${days} día${days === 1 ? '' : 's'} al ${payload.interestRate}%): + ${formatCurrency(accrued, payload.currency)}`,
+      `Total exigible al día: ${formatCurrency(totalDay, payload.currency)}`,
+      `Abono realizado: - ${formatCurrency(payload.amount, payload.currency)}`
+    );
+    if (payload.newBalance <= 0) {
+      lines.push('*Estado: CRÉDITO LIQUIDADO (Saldo 0.00)*');
+    } else {
+      lines.push(`*Nuevo saldo capital: ${formatCurrency(payload.newBalance, payload.currency)}*`);
+    }
+  } else {
+    lines.push(
+      `Saldo anterior: ${formatCurrency(payload.previousBalance, payload.currency)}`,
+      `Abono realizado: ${formatCurrency(payload.amount, payload.currency)}`
+    );
+    if ((payload.remainingBeforeInterest ?? 0) > 0) {
       lines.push(
-        `Saldo anterior: ${formatCurrency(payload.previousBalance, payload.currency)}`,
-        `Abono realizado: ${formatCurrency(payload.amount, payload.currency)}`
+        `Saldo restante: ${formatCurrency(payload.remainingBeforeInterest ?? 0, payload.currency)}`,
+        `Interés s/saldo (${payload.interestRate}%): ${formatCurrency(payload.interestAdded ?? 0, payload.currency)}`,
+        `*Nuevo saldo actual: ${formatCurrency(payload.newBalance, payload.currency)}*`
       );
-      if ((payload.remainingBeforeInterest ?? 0) > 0) {
-        lines.push(
-          `Saldo restante: ${formatCurrency(payload.remainingBeforeInterest ?? 0, payload.currency)}`,
-          `Interés s/saldo (${payload.interestRate}%): ${formatCurrency(payload.interestAdded ?? 0, payload.currency)}`,
-          `*Nuevo saldo actual: ${formatCurrency(payload.newBalance, payload.currency)}*`
-        );
-      } else {
-        lines.push('*Estado: CRÉDITO LIQUIDADO (Saldo 0.00)*');
-      }
+    } else {
+      lines.push('*Estado: CRÉDITO LIQUIDADO (Saldo 0.00)*');
     }
   }
 
@@ -664,8 +787,6 @@ export function buildWhatsAppInvoiceText(payload: InvoicePayload): string {
       `PIN: *${payload.portalCode}*`
     );
   }
-
-  lines.push('────────────────────────', 'https://wa.me/c/50576881122');
 
   return lines.join('\n');
 }

@@ -4,7 +4,6 @@ import {
   ArrowLeft,
   ChevronRight,
   Contact,
-  Link2,
   MoreVertical,
   Pencil,
   Search,
@@ -29,11 +28,13 @@ import {
   cleanPhoneInput,
   formatCurrency,
   generateDocId,
+  getModuleLabelById,
   getModuleOverdueTier,
   round2,
   validateInternationalPhone,
 } from '../lib/finance';
 import { ClientDetailModal } from './ClientDetailModal';
+import { ClosedCreditClientDetailModal } from './ClosedCreditClientDetailModal';
 import { ContactImportModal, type ImportModalMode } from './ContactImportModal';
 import {
   hasNativeApkContactsBridge,
@@ -44,16 +45,16 @@ import {
   attachPortalSnapshotToBatch,
   computePortalKey,
   generatePortalCode,
-  getPublicPortalUrl,
   syncClientPortalFromServer,
 } from '../lib/clientPortal';
 import { useBackHandler } from '../lib/backNavigation';
-import type { Client, Credit, CreditTransaction, InvoicePayload } from '../types';
+import type { Client, Credit, CreditTransaction, InvoicePayload, Product } from '../types';
 
 interface CreditCashModuleProps {
   clients: Client[];
   credits: Credit[];
   transactions: CreditTransaction[];
+  products?: Product[];
   currentUserId: string;
   currentUserName: string;
   isAdmin: boolean;
@@ -81,6 +82,7 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
   clients,
   credits,
   transactions,
+  products = [],
   currentUserId,
   currentUserName,
   isAdmin,
@@ -205,13 +207,14 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
         notes: rawNotes.trim().slice(0, 300),
         portalCode,
         portalKey,
+        moduleId: 'credit_cash',
         orgId: ORG_ID,
         createdBy: currentUserId,
         active: true,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      attachPortalSnapshotToBatch(batch, portalKey, id, safeName, [], []);
+      attachPortalSnapshotToBatch(batch, portalKey, id, safeName, [], [], 'active', 'credit_cash');
 
       await commitWithOfflineGrace(batch.commit());
       try {
@@ -242,7 +245,8 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
             c.active !== false &&
             (isCastigadaView
               ? c.portfolioStatus === 'castigada'
-              : c.portfolioStatus !== 'castigada')
+              : (c.moduleId || 'credit_cash') === 'credit_cash' &&
+                c.portfolioStatus !== 'castigada')
         )
         .sort((a, b) => a.name.localeCompare(b.name, 'es')),
     [clients, isCastigadaView]
@@ -251,9 +255,13 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
   const inactiveClients = useMemo(
     () =>
       clients
-        .filter((c) => c.active === false)
+        .filter(
+          (c) =>
+            c.active === false &&
+            (isCastigadaView || (c.moduleId || 'credit_cash') === 'credit_cash')
+        )
         .sort((a, b) => a.name.localeCompare(b.name, 'es')),
-    [clients]
+    [clients, isCastigadaView]
   );
 
   const filteredClients = useMemo(() => {
@@ -595,6 +603,27 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
   if (selectedClient) {
     const clientCredits = credits.filter((c) => c.clientId === selectedClient.id);
     const clientTxs = transactions.filter((t) => t.clientId === selectedClient.id);
+    const clientModuleId = selectedClient.moduleId || selectedClient.sourceModule || 'credit_cash';
+
+    if (clientModuleId !== 'credit_cash') {
+      return (
+        <div className="mx-auto max-w-4xl px-3 sm:px-6 py-4">
+          <ClosedCreditClientDetailModal
+            moduleId={clientModuleId}
+            moduleLabel={getModuleLabelById(clientModuleId)}
+            client={selectedClient}
+            credits={clientCredits}
+            transactions={clientTxs}
+            products={products}
+            currentUserId={currentUserId}
+            currentUserName={currentUserName}
+            isAdmin={isAdmin}
+            onBack={() => setSelectedClientId(null)}
+            onTriggerInvoice={onTriggerInvoice}
+          />
+        </div>
+      );
+    }
 
     return (
       <div className="mx-auto max-w-4xl px-3 sm:px-6 py-4">
@@ -711,25 +740,6 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
                   <Trash2 className="w-4 h-4" />
                   <span>Eliminar Clientes</span>
                 </button>
-                <div className="my-1 border-t border-slate-100" />
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setMenuOpen(false);
-                    const portalUrl = getPublicPortalUrl();
-                    try {
-                      await navigator.clipboard.writeText(portalUrl);
-                      setContactToast(`Enlace del Portal de Clientes copiado: ${portalUrl}`);
-                    } catch {
-                      setContactToast(`Enlace del Portal: ${portalUrl}`);
-                    }
-                    setTimeout(() => setContactToast(''), 5000);
-                  }}
-                  className="w-full px-4 py-3 text-left text-xs font-bold text-[#145f96] hover:bg-[#145f96]/10 flex items-center gap-2.5 cursor-pointer"
-                >
-                  <Link2 className="w-4 h-4 shrink-0" />
-                  <span>Copiar Enlace Portal Clientes</span>
-                </button>
               </div>
             </>
           )}
@@ -801,7 +811,7 @@ export const CreditCashModule: React.FC<CreditCashModuleProps> = ({
                     {isCastigadaView && hasDebt && (
                       <span className="font-sans font-bold text-[#d12925]">
                         {' '}
-                        · Congelado ({bal.maxDaysWithoutPayment}d)
+                        · {getModuleLabelById(client.sourceModule || client.moduleId)} · Congelado ({bal.maxDaysWithoutPayment}d)
                       </span>
                     )}
                     {!isCastigadaView && overdueTier === 'red' && (
